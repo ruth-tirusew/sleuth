@@ -292,3 +292,43 @@ func TestMissingContractSourceIsSetupError(t *testing.T) {
 		t.Fatal("expected setup error")
 	}
 }
+
+func TestUnusedContractSourceDoesNotBlockRun(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/e.yaml", []byte("vars:\n  base: http://127.0.0.1:1\ncontracts:\n  api: ${CONDUIT_TEST_UNSET_VAR}\n"), 0o644)
+	os.Unsetenv("CONDUIT_TEST_UNSET_VAR")
+	env, err := LoadEnv(dir + "/e.yaml")
+	if err != nil {
+		t.Fatalf("an unused contract must not fail env loading: %v", err)
+	}
+	if _, err := env.ContractLocation("api"); err == nil || !strings.Contains(err.Error(), "CONDUIT_TEST_UNSET_VAR") {
+		t.Fatalf("using it must name the unset variable, got %v", err)
+	}
+}
+
+func TestPartiallyUnsetVariableIsAnError(t *testing.T) {
+	dir := t.TempDir()
+	os.Unsetenv("CONDUIT_TEST_HOST")
+	os.WriteFile(dir+"/e.yaml", []byte("contracts:\n  api: ${CONDUIT_TEST_HOST}/openapi.json\n"), 0o644)
+	env, _ := LoadEnv(dir + "/e.yaml")
+	if _, err := env.ContractLocation("api"); err == nil || !strings.Contains(err.Error(), "CONDUIT_TEST_HOST") {
+		t.Fatalf("want unset-variable error, got %v", err)
+	}
+	os.WriteFile(dir+"/v.yaml", []byte("vars:\n  base: ${CONDUIT_TEST_HOST}/x\n"), 0o644)
+	if _, err := LoadEnv(dir + "/v.yaml"); err == nil {
+		t.Fatal("vars with an unset ${VAR} must fail too")
+	}
+	t.Setenv("CONDUIT_TEST_HOST", "http://h")
+	if loc, err := env.ContractLocation("api"); err != nil || loc != "http://h/openapi.json" {
+		t.Fatalf("%q %v", loc, err)
+	}
+}
+
+func TestRelativeContractPathIsRelativeToEnvFile(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/e.yaml", []byte("contracts:\n  api: specs/o.json\n"), 0o644)
+	env, _ := LoadEnv(dir + "/e.yaml")
+	if loc, _ := env.ContractLocation("api"); loc != dir+"/specs/o.json" {
+		t.Fatalf("%q", loc)
+	}
+}

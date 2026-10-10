@@ -32,6 +32,18 @@ type Operation struct {
 	RequestRequired bool
 	Responses       map[string]any    // status ("200", "2XX", "default") -> schema (may be nil)
 	ResponsePtrs    map[string]string // same keys -> location in the document
+
+	method, path string // lower-case method and path template, for Details
+}
+
+// httpMethods are the operation keys of an OpenAPI path item.
+var httpMethods = []string{"get", "put", "post", "delete", "options", "head", "patch", "trace"}
+
+// Param is a documented path/query/header parameter.
+type Param struct {
+	Name     string
+	In       string // path | query | header | cookie
+	Required bool
 }
 
 // Load reads an OpenAPI 3.x JSON document from a file path or http(s) URL.
@@ -125,7 +137,40 @@ func (s *Spec) Find(method, urlPath string) (*Operation, bool) {
 		return nil, false
 	}
 	op, _ := paths[best].(map[string]any)[method].(map[string]any)
-	return s.operation(strings.ToUpper(method)+" "+best, "#/paths/"+ptrEsc(best)+"/"+method, op), true
+	o := s.operation(strings.ToUpper(method)+" "+best, "#/paths/"+ptrEsc(best)+"/"+method, op)
+	o.method, o.path = method, best
+	return o, true
+}
+
+// Details returns an operation's summary and parameters. Path-level parameters are
+// merged with operation-level ones; per OpenAPI, the operation's copy of a
+// (name, in) pair overrides the path's.
+func (s *Spec) Details(o *Operation) (summary string, params []Param) {
+	item, _ := s.doc["paths"].(map[string]any)[o.path].(map[string]any)
+	op, _ := item[o.method].(map[string]any)
+	summary, _ = op["summary"].(string)
+	index := map[[2]string]int{}
+	for _, src := range []any{item["parameters"], op["parameters"]} { // path-level first, then overrides
+		list, _ := src.([]any)
+		for _, p := range list {
+			pm, _ := p.(map[string]any)
+			pm, _ = s.deref(pm, "")
+			name, _ := pm["name"].(string)
+			in, _ := pm["in"].(string)
+			req, _ := pm["required"].(bool)
+			if name == "" {
+				continue
+			}
+			key := [2]string{name, in}
+			if i, seen := index[key]; seen {
+				params[i] = Param{name, in, req}
+				continue
+			}
+			index[key] = len(params)
+			params = append(params, Param{name, in, req})
+		}
+	}
+	return summary, params
 }
 
 func matchTemplate(tpl, path string) (params int, ok bool) {
@@ -223,4 +268,19 @@ func (s *Spec) resolve(ref string) any {
 		cur = m[part]
 	}
 	return cur
+}
+
+// Operations lists every "METHOD /path" in the document, sorted.
+func (s *Spec) Operations() []string {
+	var out []string
+	for tpl, item := range s.doc["paths"].(map[string]any) {
+		m, _ := item.(map[string]any)
+		for _, method := range httpMethods {
+			if _, ok := m[method]; ok {
+				out = append(out, strings.ToUpper(method)+" "+tpl)
+			}
+		}
+	}
+	sort.Strings(out)
+	return out
 }

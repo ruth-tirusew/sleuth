@@ -23,17 +23,26 @@ func loadContracts(f *flow.Flow, env *EnvConfig) (map[string]*registry.Spec, err
 		if _, done := specs[src]; done {
 			continue
 		}
-		loc, ok := env.Contracts[src]
-		if !ok {
-			return nil, fmt.Errorf("node %s: contract source %q is not defined under contracts: in the env file", n.ID, src)
-		}
-		sp, err := registry.Load(loc)
+		sp, err := LoadContract(env, src)
 		if err != nil {
-			return nil, fmt.Errorf("contract source %q: %w", src, err)
+			return nil, fmt.Errorf("node %s: %w", n.ID, err)
 		}
 		specs[src] = sp
 	}
 	return specs, nil
+}
+
+// LoadContract resolves a contract source through the env file and loads it.
+func LoadContract(env *EnvConfig, source string) (*registry.Spec, error) {
+	loc, err := env.ContractLocation(source)
+	if err != nil {
+		return nil, err
+	}
+	sp, err := registry.Load(loc)
+	if err != nil {
+		return nil, fmt.Errorf("contract source %q: %w", source, err)
+	}
+	return sp, nil
 }
 
 type contractRun struct {

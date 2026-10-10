@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"conduit/internal/flow"
+	"conduit/internal/registry"
 	"conduit/internal/report"
 	"conduit/internal/runner"
 )
@@ -27,10 +28,13 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: conduit <run|validate> [flags] <flow.yaml>")
+		fmt.Fprintln(os.Stderr, "usage: conduit <run|validate|scaffold> [flags] ...")
 		return 2
 	}
 	cmd := args[0]
+	if cmd == "scaffold" {
+		return scaffold(args[1:])
+	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
 	outPath := fs.String("out", "", "evidence JSON path (default evidence/<flow>-<timestamp>.json)")
@@ -97,5 +101,57 @@ func exitCode(r *report.Run) int {
 	case kinds[runner.KindInfra]:
 		return 3
 	}
+	return 0
+}
+
+// scaffold prints a starter node (plus a status assertion) for one operation of a
+// provider's OpenAPI document: conduit scaffold -env e.yaml -source decision "GET /customer/score"
+func scaffold(args []string) int {
+	fs := flag.NewFlagSet("scaffold", flag.ContinueOnError)
+	envPath := fs.String("env", "", "env file whose contracts: names the OpenAPI source")
+	source := fs.String("source", "", "contract source name (as used in `contract:`)")
+	specLoc := fs.String("spec", "", "OpenAPI file or URL (alternative to resolving -source via -env)")
+	id := fs.String("id", "", "node id (default: derived from the operation)")
+	list := fs.Bool("list", false, "list the operations in the contract instead")
+	if err := fs.Parse(args); err != nil || *source == "" || (!*list && fs.NArg() != 1) {
+		fmt.Fprintln(os.Stderr, `usage: conduit scaffold -source NAME (-env env.yaml | -spec openapi.json) [-id ID] "GET /path"`)
+		fmt.Fprintln(os.Stderr, "       conduit scaffold -source NAME (-env ... | -spec ...) -list")
+		return 2
+	}
+	var spec *registry.Spec
+	var err error
+	if *specLoc != "" {
+		spec, err = registry.Load(*specLoc)
+	} else {
+		var env *runner.EnvConfig
+		if env, err = runner.LoadEnv(*envPath); err == nil {
+			spec, err = runner.LoadContract(env, *source)
+		}
+	}
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if *list {
+		for _, k := range spec.Operations() {
+			fmt.Println(k)
+		}
+		return 0
+	}
+	method, path, ok := strings.Cut(strings.TrimSpace(fs.Arg(0)), " ")
+	if !ok {
+		fmt.Fprintln(os.Stderr, `error: operation must look like "GET /path"`)
+		return 2
+	}
+	op, found := spec.Find(method, path)
+	if !found {
+		fmt.Fprintf(os.Stderr, "error: %s %s is not in the contract (try -list)\n", method, path)
+		return 2
+	}
+	nodeID := *id
+	if nodeID == "" {
+		nodeID = registry.NodeID(op.Key)
+	}
+	fmt.Print(spec.ScaffoldNode(op, *source, nodeID))
 	return 0
 }

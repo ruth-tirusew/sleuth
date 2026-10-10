@@ -18,13 +18,34 @@ type EnvConfig struct {
 	Vars    map[string]string `yaml:"vars"`
 	Secrets []string          `yaml:"secrets"` // names of OS env vars; values are never stored in files
 	// Contracts maps a source name to an OpenAPI document (file path or http(s) URL).
+	// Entries are raw; use ContractLocation, which expands and resolves only what is used.
 	Contracts map[string]string `yaml:"contracts"`
+
+	path string // the env file, for resolving relative contract paths
 }
 
 var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
 
+// expand replaces ${VAR} from the process environment. Any unset variable is an
+// error, so "${HOST}/openapi.json" can't silently become "/openapi.json".
+func expand(s string) (string, error) {
+	var missing []string
+	out := envVarRe.ReplaceAllStringFunc(s, func(m string) string {
+		name := envVarRe.FindStringSubmatch(m)[1]
+		v, ok := os.LookupEnv(name)
+		if !ok {
+			missing = append(missing, name)
+		}
+		return v
+	})
+	if len(missing) > 0 {
+		return "", fmt.Errorf("environment variable(s) not set: %s", strings.Join(missing, ", "))
+	}
+	return out, nil
+}
+
 func LoadEnv(path string) (*EnvConfig, error) {
-	var c EnvConfig
+	c := EnvConfig{path: path}
 	if path != "" {
 		b, err := os.ReadFile(path)
 		if err != nil {
@@ -34,21 +55,34 @@ func LoadEnv(path string) (*EnvConfig, error) {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
 	}
-	for k, v := range c.Contracts {
-		v = envVarRe.ReplaceAllStringFunc(v, func(m string) string {
-			return os.Getenv(envVarRe.FindStringSubmatch(m)[1])
-		})
-		if !strings.Contains(v, "://") && !filepath.IsAbs(v) {
-			v = filepath.Join(filepath.Dir(path), v) // files are relative to the env file
-		}
-		c.Contracts[k] = v
-	}
 	for k, v := range c.Vars {
-		c.Vars[k] = envVarRe.ReplaceAllStringFunc(v, func(m string) string {
-			return os.Getenv(envVarRe.FindStringSubmatch(m)[1])
-		})
+		ev, err := expand(v)
+		if err != nil {
+			return nil, fmt.Errorf("%s: vars.%s: %w", path, k, err)
+		}
+		c.Vars[k] = ev
 	}
 	return &c, nil
+}
+
+// ContractLocation expands and resolves the OpenAPI location for a contract source.
+// Files are relative to the env file.
+func (c *EnvConfig) ContractLocation(source string) (string, error) {
+	raw, ok := c.Contracts[source]
+	if !ok {
+		return "", fmt.Errorf("contract source %q is not defined under contracts: in the env file", source)
+	}
+	v, err := expand(raw)
+	if err != nil {
+		return "", fmt.Errorf("contracts.%s: %w", source, err)
+	}
+	if strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("contracts.%s is empty", source)
+	}
+	if !strings.Contains(v, "://") && !filepath.IsAbs(v) {
+		v = filepath.Join(filepath.Dir(c.path), v)
+	}
+	return v, nil
 }
 
 // Context is the run context: env, secrets and the outputs of completed nodes.

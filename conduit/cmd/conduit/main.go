@@ -3,7 +3,7 @@
 // Exit codes:
 //
 //	0 all passed
-//	1 assertion or contract failure (the system responded wrongly / off-spec)
+//	1 assertion, contract or poll-timeout failure (the system responded wrongly / off-spec / never converged)
 //	2 usage, config, secret or flow-spec error (results can't be trusted)
 //	3 infrastructure failure only (timeout/connection; safe for CI to retry)
 //
@@ -71,7 +71,8 @@ func run(args []string) int {
 		if out == "" {
 			out = filepath.Join("evidence", fmt.Sprintf("%s-%s.json", f.Name, time.Now().UTC().Format("20060102T150405Z")))
 		}
-		if err := os.MkdirAll(filepath.Dir(out), 0o755); err == nil {
+		err = os.MkdirAll(filepath.Dir(out), 0o755)
+		if err == nil {
 			err = report.WriteJSON(out, r, secrets)
 		}
 		if err != nil {
@@ -96,7 +97,7 @@ func exitCode(r *report.Run) int {
 	switch {
 	case kinds[runner.KindSpec]:
 		return 2
-	case kinds[runner.KindAssertion], kinds[runner.KindContract]:
+	case kinds[runner.KindAssertion], kinds[runner.KindContract], kinds[runner.KindTimeout]:
 		return 1
 	case kinds[runner.KindInfra]:
 		return 3
@@ -105,7 +106,7 @@ func exitCode(r *report.Run) int {
 }
 
 // scaffold prints a starter node (plus a status assertion) for one operation of a
-// provider's OpenAPI document: conduit scaffold -env e.yaml -source decision "GET /customer/score"
+// provider's OpenAPI document: conduit scaffold -env e.yaml -source api "GET /users/{id}"
 func scaffold(args []string) int {
 	fs := flag.NewFlagSet("scaffold", flag.ContinueOnError)
 	envPath := fs.String("env", "", "env file whose contracts: names the OpenAPI source")

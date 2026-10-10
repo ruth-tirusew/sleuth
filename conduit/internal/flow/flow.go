@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"os"
 	"regexp"
+	"strings"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -14,6 +16,8 @@ const (
 	KindRequest   = "request"
 	KindAssertion = "assertion"
 	KindTransform = "transform"
+	KindPoll      = "poll"
+	KindDB        = "db"
 )
 
 type Flow struct {
@@ -30,12 +34,14 @@ type Node struct {
 	Request   *Request   `yaml:"request,omitempty" json:"request,omitempty"`
 	Assert    []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
 	Transform *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
+	Poll      *Poll      `yaml:"poll,omitempty" json:"poll,omitempty"`
+	DB        *DB        `yaml:"db,omitempty" json:"db,omitempty"`
 	// Contract (request nodes only) validates the call against a published OpenAPI document.
 	Contract *Contract `yaml:"contract,omitempty" json:"contract,omitempty"`
 }
 
 // Contract binds a request node to a named source from the env file's `contracts:` map.
-// Shorthand: `contract: decision`.
+// Shorthand: `contract: api`.
 type Contract struct {
 	Source string `yaml:"source" json:"source"`
 	// OnViolation is "fail" (default) or "warn" (record evidence, don't fail the step).
@@ -73,6 +79,98 @@ type Check struct {
 	Gt       *float64 `yaml:"gt,omitempty" json:"gt,omitempty"`
 	Lt       *float64 `yaml:"lt,omitempty" json:"lt,omitempty"`
 	Message  string   `yaml:"message,omitempty" json:"message,omitempty"`
+}
+
+// Poll repeats a request until every `until` check passes or the timeout elapses.
+// `until` paths read the latest response, e.g. nodes.<id>.response.body.status.
+type Poll struct {
+	// Exactly one of Request or DB is polled.
+	Request *Request `yaml:"request,omitempty" json:"request,omitempty"`
+	DB      *DB      `yaml:"db,omitempty" json:"db,omitempty"`
+	Until   []Check  `yaml:"until" json:"until"`
+	// Interval between attempts (default 1s) and Timeout for the whole poll (default 30s).
+	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
+	Timeout  string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+}
+
+// DB runs a read-only query against a database named under `databases:` in the env file.
+// Results are available as nodes.<id>.rows (list of objects), nodes.<id>.row_count and
+// nodes.<id>.out.<name>; `assert` checks run against them.
+//
+// Type "postgres" (default) uses Query/Args. Type "mongo" uses Database, Collection and
+// either Filter (+Sort/Projection) for a find, or Pipeline for an aggregation.
+type DB struct {
+	Type       string `yaml:"type,omitempty" json:"type,omitempty"` // postgres (default) | mongo
+	Connection string `yaml:"connection" json:"connection"`
+
+	Query string `yaml:"query,omitempty" json:"query,omitempty"`
+	Args  []any  `yaml:"args,omitempty" json:"args,omitempty"`
+
+	Database   string           `yaml:"database,omitempty" json:"database,omitempty"`
+	Collection string           `yaml:"collection,omitempty" json:"collection,omitempty"`
+	Filter     map[string]any   `yaml:"filter,omitempty" json:"filter,omitempty"`
+	Sort       []map[string]int `yaml:"sort,omitempty" json:"sort,omitempty"` // ordered: [{created_at: -1}, {_id: 1}]
+	Projection map[string]any   `yaml:"projection,omitempty" json:"projection,omitempty"`
+	Pipeline   []any            `yaml:"pipeline,omitempty" json:"pipeline,omitempty"`
+
+	Timeout string `yaml:"timeout,omitempty" json:"timeout,omitempty"`   // default 10s
+	MaxRows int    `yaml:"max_rows,omitempty" json:"max_rows,omitempty"` // default 1000
+	// Extract maps output names to paths in {rows, row_count}, e.g. id: rows.0.id.
+	Extract map[string]string `yaml:"extract,omitempty" json:"extract,omitempty"`
+}
+
+const (
+	DBPostgres = "postgres"
+	DBMongo    = "mongo"
+)
+
+// Kind returns the database type with the default applied.
+func (d *DB) Kind() string {
+	if d.Type == "" {
+		return DBPostgres
+	}
+	return d.Type
+}
+
+func (d *DB) validate(id string) error {
+	if d == nil || d.Connection == "" {
+		return fmt.Errorf("node %s: db.connection is required", id)
+	}
+	switch d.Kind() {
+	case DBPostgres:
+		if strings.TrimSpace(d.Query) == "" {
+			return fmt.Errorf("node %s: db.query is required for postgres", id)
+		}
+		if d.Database != "" || d.Collection != "" || d.Filter != nil || d.Pipeline != nil || d.Sort != nil || d.Projection != nil {
+			return fmt.Errorf("node %s: database/collection/filter/pipeline/sort/projection are mongo-only fields", id)
+		}
+	case DBMongo:
+		if d.Database == "" || d.Collection == "" {
+			return fmt.Errorf("node %s: db.database and db.collection are required for mongo", id)
+		}
+		if d.Query != "" || d.Args != nil {
+			return fmt.Errorf("node %s: query/args are postgres-only; mongo uses filter or pipeline", id)
+		}
+		if d.Pipeline != nil && (d.Filter != nil || d.Sort != nil || d.Projection != nil) {
+			return fmt.Errorf("node %s: use either pipeline or filter/sort/projection, not both", id)
+		}
+		for _, s := range d.Sort {
+			if len(s) != 1 {
+				return fmt.Errorf("node %s: each sort entry must have exactly one field", id)
+			}
+		}
+	default:
+		return fmt.Errorf("node %s: db.type must be postgres or mongo", id)
+	}
+	if d.Timeout != "" {
+		if _, err := time.ParseDuration(d.Timeout); err != nil {
+			return fmt.Errorf("node %s: bad db.timeout %q", id, d.Timeout)
+		}
+	}
+	if d.MaxRows < 0 {
+		return fmt.Errorf("node %s: db.max_rows must be positive", id)
+	}
+	return nil
 }
 
 type Transform struct {
@@ -114,7 +212,7 @@ func (f *Flow) Validate() error {
 	seen := map[string]bool{}
 	for _, n := range f.Nodes {
 		if c := n.Contract; c != nil {
-			if n.Kind != KindRequest {
+			if n.Kind != KindRequest && n.Kind != KindPoll {
 				return fmt.Errorf("node %s: contract is only valid on request nodes", n.ID)
 			}
 			if c.Source == "" {
@@ -139,6 +237,39 @@ func (f *Flow) Validate() error {
 		case KindAssertion:
 			if len(n.Assert) == 0 {
 				return fmt.Errorf("node %s: assert must have at least one check", n.ID)
+			}
+		case KindPoll:
+			if n.Poll == nil || (n.Poll.Request == nil) == (n.Poll.DB == nil) {
+				return fmt.Errorf("node %s: poll needs exactly one of poll.request or poll.db", n.ID)
+			}
+			if n.Poll.Request != nil && n.Poll.Request.URL == "" {
+				return fmt.Errorf("node %s: poll.request.url is required", n.ID)
+			}
+			if n.Poll.DB != nil {
+				if err := n.Poll.DB.validate(n.ID); err != nil {
+					return err
+				}
+			}
+			if len(n.Poll.Until) == 0 {
+				return fmt.Errorf("node %s: poll.until must have at least one check", n.ID)
+			}
+			for _, d := range []string{n.Poll.Interval, n.Poll.Timeout} {
+				if d == "" {
+					continue
+				}
+				if _, err := time.ParseDuration(d); err != nil {
+					return fmt.Errorf("node %s: bad poll duration %q", n.ID, d)
+				}
+			}
+			if n.Contract != nil {
+				return fmt.Errorf("node %s: contract is not supported on poll nodes", n.ID)
+			}
+		case KindDB:
+			if err := n.DB.validate(n.ID); err != nil {
+				return err
+			}
+			if len(n.Assert) == 0 && len(n.DB.Extract) == 0 {
+				return fmt.Errorf("node %s: a db node needs assert or db.extract", n.ID)
 			}
 		case KindTransform:
 			if n.Transform == nil || len(n.Transform.Set) == 0 {

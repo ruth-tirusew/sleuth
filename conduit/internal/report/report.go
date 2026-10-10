@@ -23,6 +23,8 @@ type Run struct {
 	StartedAt  time.Time `json:"started_at"`
 	DurationMs int64     `json:"duration_ms"`
 	Steps      []Step    `json:"steps"`
+	// Drift summarises contract disagreements across the run; absent when no step used a contract.
+	Drift *DriftSummary `json:"drift,omitempty"`
 }
 
 type Step struct {
@@ -35,6 +37,8 @@ type Step struct {
 	Response   *HTTPResponse   `json:"response,omitempty"`
 	Checks     []CheckResult   `json:"checks,omitempty"`
 	Contract   *ContractResult `json:"contract,omitempty"`
+	Poll       *PollResult     `json:"poll,omitempty"`
+	DB         *DBResult       `json:"db,omitempty"`
 	Output     map[string]any  `json:"output,omitempty"`
 	Error      string          `json:"error,omitempty"`
 	// ErrorKind is set on failed steps: assertion, infrastructure or spec.
@@ -54,6 +58,36 @@ type Violation struct {
 	Where   string `json:"where"` // operation | request | response
 	Path    string `json:"path,omitempty"`
 	Message string `json:"message"`
+}
+
+// DBResult is the evidence of a db node.
+type DBResult struct {
+	Type       string           `json:"type"`       // postgres | mongo
+	Connection string           `json:"connection"` // the name, never the DSN
+	Query      string           `json:"query"`
+	Args       []any            `json:"args,omitempty"`
+	RowCount   int              `json:"row_count"`
+	Rows       []map[string]any `json:"rows,omitempty"` // first 20 only
+	Truncated  bool             `json:"rows_truncated,omitempty"`
+	DurationMs int64            `json:"duration_ms"`
+}
+
+// PollResult is the evidence of a poll node: every attempt and why it ended.
+type PollResult struct {
+	Attempts   int           `json:"attempts"`
+	IntervalMs int64         `json:"interval_ms"`
+	TimeoutMs  int64         `json:"timeout_ms"`
+	Satisfied  bool          `json:"satisfied"`
+	History    []PollAttempt `json:"history"`
+}
+
+type PollAttempt struct {
+	N         int    `json:"n"`
+	ElapsedMs int64  `json:"elapsed_ms"`
+	Status    int    `json:"status,omitempty"`    // HTTP status; 0 when the attempt got no response
+	RowCount  int    `json:"row_count,omitempty"` // db polls: rows returned
+	Passed    bool   `json:"passed"`
+	Error     string `json:"error,omitempty"`
 }
 
 type HTTPRequest struct {
@@ -103,6 +137,12 @@ func Print(w io.Writer, r *Run) {
 			fmt.Fprintf(w, "  %s %s -> %d", s.Request.Method, s.Request.URL, s.Response.Status)
 		}
 		fmt.Fprintln(w)
+		if d := s.DB; d != nil {
+			fmt.Fprintf(w, "     db %s: %d row(s) in %dms\n", d.Connection, d.RowCount, d.DurationMs)
+		}
+		if p := s.Poll; p != nil {
+			fmt.Fprintf(w, "     poll: %d attempt(s), every %dms, timeout %dms, satisfied=%v\n", p.Attempts, p.IntervalMs, p.TimeoutMs, p.Satisfied)
+		}
 		if c := s.Contract; c != nil {
 			if len(c.Violations) == 0 {
 				fmt.Fprintf(w, "     contract %s %s: ok\n", c.Source, c.Operation)
@@ -131,5 +171,6 @@ func Print(w io.Writer, r *Run) {
 			}
 		}
 	}
+	printDrift(w, r.Drift)
 	fmt.Fprintf(w, "\n%d steps in %dms\n", len(r.Steps), r.DurationMs)
 }

@@ -28,7 +28,7 @@ func TestScaffoldNode(t *testing.T) {
 func TestNodeID(t *testing.T) {
 	for in, want := range map[string]string{
 		"GET /health":                    "get_health",
-		"GET /loanProcess/customer/{id}": "get_loanProcess_customer_id",
+		"GET /orders/customer/{id}":      "get_orders_customer_id",
 		"POST /product-scoring/mappings": "post_product_scoring_mappings",
 		"DELETE /a/{b}/c.d":              "delete_a_b_c_d",
 	} {

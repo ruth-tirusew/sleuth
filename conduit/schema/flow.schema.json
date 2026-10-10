@@ -45,7 +45,9 @@
           "enum": [
             "request",
             "assertion",
-            "transform"
+            "transform",
+            "poll",
+            "db"
           ]
         },
         "needs": {
@@ -104,6 +106,52 @@
             }
           ],
           "description": "Request nodes only: validate the call against the OpenAPI document named under contracts: in the env file."
+        },
+        "poll": {
+          "type": "object",
+          "required": [
+            "until"
+          ],
+          "additionalProperties": false,
+          "description": "Repeat the request until every `until` check passes or `timeout` elapses.",
+          "properties": {
+            "request": {
+              "$ref": "#/$defs/request"
+            },
+            "until": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/check"
+              }
+            },
+            "interval": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m)$"
+            },
+            "timeout": {
+              "type": "string",
+              "pattern": "^[0-9]+(ms|s|m)$"
+            },
+            "db": {
+              "$ref": "#/$defs/db"
+            }
+          },
+          "oneOf": [
+            {
+              "required": [
+                "request"
+              ]
+            },
+            {
+              "required": [
+                "db"
+              ]
+            }
+          ]
+        },
+        "db": {
+          "$ref": "#/$defs/db"
         }
       },
       "allOf": [
@@ -146,6 +194,34 @@
           "then": {
             "required": [
               "transform"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "poll"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "poll"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "db"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "db"
             ]
           }
         }
@@ -226,6 +302,99 @@
           "type": "string"
         }
       }
+    },
+    "db": {
+      "type": "object",
+      "required": [
+        "connection"
+      ],
+      "additionalProperties": false,
+      "description": "Read-only database query. postgres (default): query+args. mongo: database+collection with filter/sort/projection or pipeline. Rows: nodes.<id>.rows, nodes.<id>.row_count.",
+      "properties": {
+        "type": {
+          "enum": [
+            "postgres",
+            "mongo"
+          ]
+        },
+        "connection": {
+          "type": "string"
+        },
+        "query": {
+          "type": "string"
+        },
+        "args": {
+          "type": "array"
+        },
+        "database": {
+          "type": "string"
+        },
+        "collection": {
+          "type": "string"
+        },
+        "filter": {
+          "type": "object"
+        },
+        "projection": {
+          "type": "object"
+        },
+        "pipeline": {
+          "type": "array"
+        },
+        "sort": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "minProperties": 1,
+            "maxProperties": 1,
+            "additionalProperties": {
+              "enum": [
+                1,
+                -1
+              ]
+            }
+          }
+        },
+        "timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m)$"
+        },
+        "max_rows": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "extract": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "mongo"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "required": [
+              "database",
+              "collection"
+            ]
+          },
+          "else": {
+            "required": [
+              "query"
+            ]
+          }
+        }
+      ]
     }
   }
 }

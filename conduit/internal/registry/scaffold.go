@@ -305,7 +305,7 @@ func secretName(h string) string {
 var underscores = regexp.MustCompile(`_+`)
 
 // NodeID derives a flow-safe id (matching ^[A-Za-z_][A-Za-z0-9_]*$) from an operation
-// key: "GET /loanProcess/{id}" -> get_loanProcess_id.
+// key: "GET /orders/{id}" -> get_orders_id.
 func NodeID(key string) string {
 	method, path, _ := strings.Cut(key, " ")
 	id := strings.ToLower(method) + "_" + nonIdent.ReplaceAllString(path, "_")

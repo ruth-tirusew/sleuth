@@ -20,6 +20,9 @@ type EnvConfig struct {
 	// Contracts maps a source name to an OpenAPI document (file path or http(s) URL).
 	// Entries are raw; use ContractLocation, which expands and resolves only what is used.
 	Contracts map[string]string `yaml:"contracts"`
+	// Databases maps a connection name to a Postgres DSN, usually "${SOME_ENV_VAR}" so
+	// credentials stay out of files. Expanded only when a db node uses it.
+	Databases map[string]string `yaml:"databases"`
 
 	path string // the env file, for resolving relative contract paths
 }
@@ -63,6 +66,22 @@ func LoadEnv(path string) (*EnvConfig, error) {
 		c.Vars[k] = ev
 	}
 	return &c, nil
+}
+
+// DatabaseDSN expands and returns the DSN for a named connection.
+func (c *EnvConfig) DatabaseDSN(name string) (string, error) {
+	raw, ok := c.Databases[name]
+	if !ok {
+		return "", fmt.Errorf("database connection %q is not defined under databases: in the env file", name)
+	}
+	v, err := expand(raw)
+	if err != nil {
+		return "", fmt.Errorf("databases.%s: %w", name, err)
+	}
+	if strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("databases.%s is empty", name)
+	}
+	return v, nil
 }
 
 // ContractLocation expands and resolves the OpenAPI location for a contract source.

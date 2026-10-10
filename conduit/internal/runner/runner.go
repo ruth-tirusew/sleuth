@@ -28,6 +28,8 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	if err != nil {
 		return nil, nil, err
 	}
+	conns := newDBConns()
+	defer conns.close()
 	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
 	status := map[string]string{}
 
@@ -50,6 +52,10 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 			switch n.Kind {
 			case flow.KindRequest:
 				out, err = execRequest(ctx, n, &step, specs)
+			case flow.KindPoll:
+				out, err = execPoll(ctx, env, conns, n, &step, specs)
+			case flow.KindDB:
+				out, err = execDB(ctx, env, conns, n, &step)
 			case flow.KindAssertion:
 				out, err = execAssertion(ctx, n, &step)
 			case flow.KindTransform:
@@ -72,5 +78,6 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		run.Steps = append(run.Steps, step)
 	}
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
+	report.SummarizeDrift(run)
 	return run, secrets, nil
 }

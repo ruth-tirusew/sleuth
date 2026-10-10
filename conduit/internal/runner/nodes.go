@@ -132,17 +132,27 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]
 			return nil, contractErr(cr.err("response"))
 		}
 	}
-	out := map[string]any{}
-	for name, path := range r.Extract {
-		v, ok := lookup(response, path)
-		if !ok {
-			return nil, assertErr(fmt.Errorf("extract %q: path %q not found in response (HTTP %d, body: %s)",
-				name, path, resp.StatusCode, snippet(raw)))
-		}
-		out[name] = v
+	out, err := extractOutputs(response, r.Extract)
+	if err != nil {
+		return nil, err
 	}
 	step.Output = out
 	return map[string]any{"response": response, "out": out}, nil
+}
+
+// extractOutputs reads named values out of a response (paths like body.token).
+func extractOutputs(response map[string]any, extract map[string]string) (map[string]any, error) {
+	out := map[string]any{}
+	for name, path := range extract {
+		v, ok := lookup(response, path)
+		if !ok {
+			raw, _ := response["raw"].(string)
+			return nil, assertErr(fmt.Errorf("extract %q: path %q not found in response (HTTP %.0f, body: %s)",
+				name, path, response["status"], snippet([]byte(raw))))
+		}
+		out[name] = v
+	}
+	return out, nil
 }
 
 func execTransform(ctx *Context, n flow.Node, step *report.Step) (map[string]any, error) {
@@ -159,16 +169,29 @@ func execTransform(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 }
 
 func execAssertion(ctx *Context, n flow.Node, step *report.Step) (map[string]any, error) {
-	failed := 0
+	results, failed, err := evalChecks(ctx, n.Assert)
+	step.Checks = results
+	if err != nil {
+		return nil, err
+	}
+	if failed > 0 {
+		return nil, assertErr(fmt.Errorf("%d assertion(s) failed", failed))
+	}
+	return map[string]any{"passed": true}, nil
+}
+
+// evalChecks evaluates checks against the run context. A non-nil error means the
+// checks themselves are broken (bad template/regex); failed counts unmet checks.
+func evalChecks(ctx *Context, checks []flow.Check) (results []report.CheckResult, failed int, err error) {
 	add := func(c flow.Check, op string, expected, actual any, ok bool) {
-		step.Checks = append(step.Checks, report.CheckResult{
+		results = append(results, report.CheckResult{
 			Path: c.Path, Op: op, Expected: expected, Actual: actual, Passed: ok, Message: c.Message,
 		})
 		if !ok {
 			failed++
 		}
 	}
-	for _, c := range n.Assert {
+	for _, c := range checks {
 		actual, found := ctx.Lookup(c.Path)
 		if c.Exists != nil {
 			add(c, "exists", *c.Exists, found, found == *c.Exists)
@@ -176,21 +199,21 @@ func execAssertion(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 		if c.Equals != nil {
 			exp, err := ctx.Render(c.Equals)
 			if err != nil {
-				return nil, specErr(err)
+				return results, failed, specErr(err)
 			}
 			add(c, "equals", exp, actual, found && jsonEqual(exp, actual))
 		}
 		if c.Contains != nil {
 			exp, err := ctx.Render(c.Contains)
 			if err != nil {
-				return nil, specErr(err)
+				return results, failed, specErr(err)
 			}
 			add(c, "contains", exp, actual, found && contains(actual, exp))
 		}
 		if c.Matches != "" {
 			re, err := regexp.Compile(c.Matches)
 			if err != nil {
-				return nil, specErr(fmt.Errorf("bad regex %q: %w", c.Matches, err))
+				return results, failed, specErr(fmt.Errorf("bad regex %q: %w", c.Matches, err))
 			}
 			add(c, "matches", c.Matches, actual, found && re.MatchString(fmt.Sprint(actual)))
 		}
@@ -203,10 +226,7 @@ func execAssertion(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 			add(c, "lt", *c.Lt, actual, found && isNum && f < *c.Lt)
 		}
 	}
-	if failed > 0 {
-		return nil, assertErr(fmt.Errorf("%d assertion(s) failed", failed))
-	}
-	return map[string]any{"passed": true}, nil
+	return results, failed, nil
 }
 
 // jsonEqual compares after a JSON round trip so int/float differences don't matter.

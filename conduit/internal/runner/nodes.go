@@ -13,12 +13,13 @@ import (
 	"time"
 
 	"conduit/internal/flow"
+	"conduit/internal/registry"
 	"conduit/internal/report"
 )
 
 var httpClient = &http.Client{}
 
-func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, error) {
+func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]*registry.Spec) (map[string]any, error) {
 	r := n.Request
 	method := strings.ToUpper(r.Method)
 	if method == "" {
@@ -65,6 +66,15 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 		}
 	}
 	step.Request = &report.HTTPRequest{Method: method, URL: u.String(), Headers: headers, Body: body}
+
+	cr := newContractRun(n.Contract, specs, method, u.Path)
+	if cr != nil {
+		step.Contract = cr.res
+		cr.checkRequest(body)
+		if cr.blocking() {
+			return nil, contractErr(cr.err("request not sent"))
+		}
+	}
 
 	timeout := 30 * time.Second
 	if r.Timeout != "" {
@@ -115,6 +125,12 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 	}
 	if parsed != nil { // body is absent for non-JSON responses
 		response["body"] = parsed
+	}
+	if cr != nil {
+		cr.checkResponse(resp.StatusCode, parsed)
+		if cr.blocking() {
+			return nil, contractErr(cr.err("response"))
+		}
 	}
 	out := map[string]any{}
 	for name, path := range r.Extract {

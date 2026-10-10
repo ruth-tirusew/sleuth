@@ -3,58 +3,228 @@
   "$id": "https://conduit.local/schema/flow.schema.json",
   "title": "Conduit flow spec v1",
   "type": "object",
-  "required": ["version", "name", "nodes"],
+  "required": [
+    "version",
+    "name",
+    "nodes"
+  ],
   "additionalProperties": false,
   "properties": {
-    "version": { "const": 1 },
-    "name": { "type": "string", "minLength": 1 },
-    "description": { "type": "string" },
-    "nodes": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/node" } }
+    "version": {
+      "const": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1
+    },
+    "description": {
+      "type": "string"
+    },
+    "nodes": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    }
   },
   "$defs": {
     "node": {
       "type": "object",
-      "required": ["id", "kind"],
+      "required": [
+        "id",
+        "kind"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "pattern": "^[A-Za-z_][A-Za-z0-9_]*$" },
-        "kind": { "enum": ["request", "assertion", "transform"] },
-        "needs": { "type": "array", "items": { "type": "string" } },
-        "request": { "$ref": "#/$defs/request" },
-        "assert": { "type": "array", "minItems": 1, "items": { "$ref": "#/$defs/check" } },
+        "id": {
+          "type": "string",
+          "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+        },
+        "kind": {
+          "enum": [
+            "request",
+            "assertion",
+            "transform"
+          ]
+        },
+        "needs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "request": {
+          "$ref": "#/$defs/request"
+        },
+        "assert": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/check"
+          }
+        },
         "transform": {
-          "type": "object", "required": ["set"], "additionalProperties": false,
-          "properties": { "set": { "type": "object", "minProperties": 1 } }
+          "type": "object",
+          "required": [
+            "set"
+          ],
+          "additionalProperties": false,
+          "properties": {
+            "set": {
+              "type": "object",
+              "minProperties": 1
+            }
+          }
+        },
+        "contract": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1
+            },
+            {
+              "type": "object",
+              "required": [
+                "source"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "source": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "on_violation": {
+                  "enum": [
+                    "fail",
+                    "warn"
+                  ]
+                }
+              }
+            }
+          ],
+          "description": "Request nodes only: validate the call against the OpenAPI document named under contracts: in the env file."
         }
       },
       "allOf": [
-        { "if": { "properties": { "kind": { "const": "request" } } }, "then": { "required": ["request"] } },
-        { "if": { "properties": { "kind": { "const": "assertion" } } }, "then": { "required": ["assert"] } },
-        { "if": { "properties": { "kind": { "const": "transform" } } }, "then": { "required": ["transform"] } }
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "request"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "request"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "assertion"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "assert"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "transform"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "transform"
+            ]
+          }
+        }
       ]
     },
     "request": {
-      "type": "object", "required": ["url"], "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "url"
+      ],
+      "additionalProperties": false,
       "properties": {
-        "method": { "enum": ["GET", "POST", "PUT", "PATCH", "DELETE", "HEAD", "OPTIONS"] },
-        "url": { "type": "string" },
-        "headers": { "type": "object", "additionalProperties": { "type": "string" } },
-        "query": { "type": "object", "additionalProperties": { "type": "string" } },
+        "method": {
+          "enum": [
+            "GET",
+            "POST",
+            "PUT",
+            "PATCH",
+            "DELETE",
+            "HEAD",
+            "OPTIONS"
+          ]
+        },
+        "url": {
+          "type": "string"
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
+        "query": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        },
         "body": {},
-        "timeout": { "type": "string", "pattern": "^[0-9]+(ms|s|m)$" },
-        "extract": { "type": "object", "additionalProperties": { "type": "string" } }
+        "timeout": {
+          "type": "string",
+          "pattern": "^[0-9]+(ms|s|m)$"
+        },
+        "extract": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string"
+          }
+        }
       }
     },
     "check": {
-      "type": "object", "required": ["path"], "additionalProperties": false,
+      "type": "object",
+      "required": [
+        "path"
+      ],
+      "additionalProperties": false,
       "minProperties": 2,
       "properties": {
-        "path": { "type": "string" },
-        "equals": {}, "contains": {},
-        "exists": { "type": "boolean" },
-        "matches": { "type": "string" },
-        "gt": { "type": "number" }, "lt": { "type": "number" },
-        "message": { "type": "string" }
+        "path": {
+          "type": "string"
+        },
+        "equals": {},
+        "contains": {},
+        "exists": {
+          "type": "boolean"
+        },
+        "matches": {
+          "type": "string"
+        },
+        "gt": {
+          "type": "number"
+        },
+        "lt": {
+          "type": "number"
+        },
+        "message": {
+          "type": "string"
+        }
       }
     }
   }

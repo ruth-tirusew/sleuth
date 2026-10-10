@@ -173,3 +173,122 @@ nodes:
 		t.Error("skipped step must not carry an error_kind")
 	}
 }
+
+const fakeSpec = `{"openapi":"3.1.0","paths":{
+ "/users/{id}":{"get":{"responses":{"200":{"content":{"application/json":{"schema":
+    {"type":"object","required":["id","name"],"properties":{"id":{"type":"integer"},"name":{"type":"string"}}}}}}}}},
+ "/users":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":
+    {"type":"object","required":["name"],"additionalProperties":false,"properties":{"name":{"type":"string"}}}}}},
+    "responses":{"201":{}}}},
+ "/empty":{"get":{"responses":{"200":{"content":{"application/json":{"schema":{}}}}}}}
+}}`
+
+func runContract(t *testing.T, yaml string, handler http.HandlerFunc) *report.Run {
+	t.Helper()
+	srv := httptest.NewServer(handler)
+	defer srv.Close()
+	dir := t.TempDir()
+	os.WriteFile(dir+"/spec.json", []byte(fakeSpec), 0o644)
+	os.WriteFile(dir+"/f.yaml", []byte(yaml), 0o644)
+	f, err := flow.Load(dir + "/f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &EnvConfig{Vars: map[string]string{"base": srv.URL}, Contracts: map[string]string{"api": dir + "/spec.json"}}
+	r, _, err := Run(f, env, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return r
+}
+
+func TestContractResponseDriftFailsWithContractKind(t *testing.T) {
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: b, kind: transform, needs: [a], transform: {set: {x: 1}}}
+`, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":"7"}`)) }) // wrong type + missing name
+	a := step(r, "a")
+	if a.Status != report.Failed || a.ErrorKind != KindContract {
+		t.Fatalf("%+v", a)
+	}
+	if a.Response == nil || a.Contract.Operation != "GET /users/{id}" || len(a.Contract.Violations) != 2 {
+		t.Fatalf("%+v", a.Contract)
+	}
+	if step(r, "b").Status != report.Skipped {
+		t.Fatal("dependent must be skipped")
+	}
+}
+
+func TestContractWarnModePassesButRecords(t *testing.T) {
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - {id: a, kind: request, contract: {source: api, on_violation: warn}, request: {url: "{{ .env.base }}/users/7"}}
+`, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":"7","name":"x"}`)) })
+	a := step(r, "a")
+	if a.Status != report.Passed || len(a.Contract.Violations) != 1 {
+		t.Fatalf("%+v %+v", a, a.Contract)
+	}
+}
+
+func TestContractBadRequestIsNotSent(t *testing.T) {
+	hits := 0
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - id: a
+    kind: request
+    contract: api
+    request: {method: POST, url: "{{ .env.base }}/users", body: {name: 5, junk: true}}
+`, func(w http.ResponseWriter, _ *http.Request) { hits++ })
+	a := step(r, "a")
+	if a.ErrorKind != KindContract || hits != 0 || a.Response != nil {
+		t.Fatalf("hits=%d %+v", hits, a)
+	}
+	if len(a.Contract.Violations) != 2 {
+		t.Fatalf("%+v", a.Contract.Violations)
+	}
+}
+
+func TestContractUndocumentedStatusAndOperationAndEmptySchema(t *testing.T) {
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - {id: undocumented, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: unknown_op, kind: request, contract: api, request: {url: "{{ .env.base }}/nope"}}
+  - {id: empty, kind: request, contract: api, request: {url: "{{ .env.base }}/empty"}}
+`, func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.URL.Path, "/users") {
+			w.WriteHeader(401)
+		}
+		w.Write([]byte(`{}`))
+	})
+	if v := step(r, "undocumented").Contract.Violations; len(v) != 1 || !strings.Contains(v[0].Message, "not documented") {
+		t.Fatalf("%+v", v)
+	}
+	if v := step(r, "unknown_op").Contract.Violations; len(v) != 1 || v[0].Where != "operation" {
+		t.Fatalf("%+v", v)
+	}
+	e := step(r, "empty")
+	if e.Status != report.Passed || len(e.Contract.Notes) != 1 {
+		t.Fatalf("empty schema should pass with a note: %+v %+v", e, e.Contract)
+	}
+}
+
+func TestMissingContractSourceIsSetupError(t *testing.T) {
+	dir := t.TempDir()
+	os.WriteFile(dir+"/f.yaml", []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, contract: nope, request: {url: \"http://x\"}}\n"), 0o644)
+	f, err := flow.Load(dir + "/f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := Run(f, &EnvConfig{}, Options{}); err == nil {
+		t.Fatal("expected setup error")
+	}
+}

@@ -30,6 +30,25 @@ type Node struct {
 	Request   *Request   `yaml:"request,omitempty" json:"request,omitempty"`
 	Assert    []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
 	Transform *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
+	// Contract (request nodes only) validates the call against a published OpenAPI document.
+	Contract *Contract `yaml:"contract,omitempty" json:"contract,omitempty"`
+}
+
+// Contract binds a request node to a named source from the env file's `contracts:` map.
+// Shorthand: `contract: decision`.
+type Contract struct {
+	Source string `yaml:"source" json:"source"`
+	// OnViolation is "fail" (default) or "warn" (record evidence, don't fail the step).
+	OnViolation string `yaml:"on_violation,omitempty" json:"on_violation,omitempty"`
+}
+
+func (c *Contract) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		c.Source = n.Value
+		return nil
+	}
+	type plain Contract
+	return n.Decode((*plain)(c))
 }
 
 type Request struct {
@@ -94,6 +113,17 @@ func (f *Flow) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, n := range f.Nodes {
+		if c := n.Contract; c != nil {
+			if n.Kind != KindRequest {
+				return fmt.Errorf("node %s: contract is only valid on request nodes", n.ID)
+			}
+			if c.Source == "" {
+				return fmt.Errorf("node %s: contract.source is required", n.ID)
+			}
+			if c.OnViolation != "" && c.OnViolation != "fail" && c.OnViolation != "warn" {
+				return fmt.Errorf("node %s: contract.on_violation must be fail or warn", n.ID)
+			}
+		}
 		if !idRe.MatchString(n.ID) {
 			return fmt.Errorf("node id %q must match %s", n.ID, idRe)
 		}

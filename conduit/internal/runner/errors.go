@@ -7,6 +7,8 @@ import "errors"
 const (
 	// KindAssertion: the system responded but not as the flow expected.
 	KindAssertion = "assertion"
+	// KindContract: the call disagrees with the published OpenAPI contract.
+	KindContract = "contract"
 	// KindInfra: no usable response (timeout, connection refused, DNS, read error).
 	KindInfra = "infrastructure"
 	// KindSpec: the flow itself is broken (bad template, regex, URL, timeout value).
@@ -22,6 +24,7 @@ func (e *kindError) Error() string { return e.err.Error() }
 func (e *kindError) Unwrap() error { return e.err }
 
 func assertErr(err error) error    { return &kindError{KindAssertion, err} }
+func contractErr(err error) error  { return &kindError{KindContract, err} }
 func transportErr(err error) error { return &kindError{KindInfra, err} }
 func specErr(err error) error      { return &kindError{KindSpec, err} }
 

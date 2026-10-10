@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -16,6 +17,8 @@ import (
 type EnvConfig struct {
 	Vars    map[string]string `yaml:"vars"`
 	Secrets []string          `yaml:"secrets"` // names of OS env vars; values are never stored in files
+	// Contracts maps a source name to an OpenAPI document (file path or http(s) URL).
+	Contracts map[string]string `yaml:"contracts"`
 }
 
 var envVarRe = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)\}`)
@@ -30,6 +33,15 @@ func LoadEnv(path string) (*EnvConfig, error) {
 		if err := yaml.Unmarshal(b, &c); err != nil {
 			return nil, fmt.Errorf("parse %s: %w", path, err)
 		}
+	}
+	for k, v := range c.Contracts {
+		v = envVarRe.ReplaceAllStringFunc(v, func(m string) string {
+			return os.Getenv(envVarRe.FindStringSubmatch(m)[1])
+		})
+		if !strings.Contains(v, "://") && !filepath.IsAbs(v) {
+			v = filepath.Join(filepath.Dir(path), v) // files are relative to the env file
+		}
+		c.Contracts[k] = v
 	}
 	for k, v := range c.Vars {
 		c.Vars[k] = envVarRe.ReplaceAllStringFunc(v, func(m string) string {

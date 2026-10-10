@@ -1,6 +1,13 @@
 // conduit runs API flow specs and emits evidence.
 //
-// Exit codes: 0 all passed, 1 a node failed, 2 usage/spec/config error.
+// Exit codes:
+//
+//	0 all passed
+//	1 assertion or contract failure (the system responded wrongly / off-spec)
+//	2 usage, config, secret or flow-spec error (results can't be trusted)
+//	3 infrastructure failure only (timeout/connection; safe for CI to retry)
+//
+// When a run has several kinds of failure, 2 wins over 1, and 1 over 3.
 package main
 
 import (
@@ -69,11 +76,26 @@ func run(args []string) int {
 		}
 		report.Print(os.Stdout, r)
 		fmt.Println("evidence:", out)
-		if r.Status != report.Passed {
-			return 1
-		}
-		return 0
+		return exitCode(r)
 	}
 	fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 	return 2
+}
+
+func exitCode(r *report.Run) int {
+	kinds := map[string]bool{}
+	for _, s := range r.Steps {
+		if s.Status == report.Failed {
+			kinds[s.ErrorKind] = true
+		}
+	}
+	switch {
+	case kinds[runner.KindSpec]:
+		return 2
+	case kinds[runner.KindAssertion], kinds[runner.KindContract]:
+		return 1
+	case kinds[runner.KindInfra]:
+		return 3
+	}
+	return 0
 }

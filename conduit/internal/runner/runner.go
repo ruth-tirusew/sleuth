@@ -24,6 +24,10 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	if err != nil {
 		return nil, nil, err
 	}
+	specs, err := loadContracts(f, env)
+	if err != nil {
+		return nil, nil, err
+	}
 	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
 	status := map[string]string{}
 
@@ -45,7 +49,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 			var err error
 			switch n.Kind {
 			case flow.KindRequest:
-				out, err = execRequest(ctx, n, &step)
+				out, err = execRequest(ctx, n, &step, specs)
 			case flow.KindAssertion:
 				out, err = execAssertion(ctx, n, &step)
 			case flow.KindTransform:

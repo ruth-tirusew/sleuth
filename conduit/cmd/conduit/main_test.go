@@ -71,3 +71,26 @@ func TestCycleExit2(t *testing.T) {
 		t.Fatalf("want exit 2, got %d", code)
 	}
 }
+
+func TestInfraFailureExit3(t *testing.T) {
+	srv := httptest.NewServer(nil)
+	url := srv.URL
+	srv.Close()
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f.yaml")
+	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, request: {url: \"{{ .env.base }}/\"}}\n"), 0o644)
+	e := filepath.Join(dir, "e.yaml")
+	os.WriteFile(e, []byte("vars:\n  base: "+url+"\n"), 0o644)
+	if code := run([]string{"run", "-env", e, "-out", filepath.Join(dir, "o.json"), f}); code != 3 {
+		t.Fatalf("want exit 3, got %d", code)
+	}
+}
+
+func TestBrokenTemplateExit2(t *testing.T) {
+	dir := t.TempDir()
+	f := filepath.Join(dir, "f.yaml")
+	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, request: {url: \"{{ .env.nope }}/\"}}\n"), 0o644)
+	if code := run([]string{"run", "-out", filepath.Join(dir, "o.json"), f}); code != 2 {
+		t.Fatalf("want exit 2, got %d", code)
+	}
+}

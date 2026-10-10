@@ -26,18 +26,18 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 	}
 	rawURL, err := ctx.RenderString(r.URL)
 	if err != nil {
-		return nil, err
+		return nil, specErr(err)
 	}
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return nil, err
+		return nil, specErr(err)
 	}
 	if len(r.Query) > 0 {
 		q := u.Query()
 		for k, v := range r.Query {
 			rv, err := ctx.RenderString(v)
 			if err != nil {
-				return nil, err
+				return nil, specErr(err)
 			}
 			q.Set(k, rv)
 		}
@@ -46,18 +46,18 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 	headers := map[string]string{}
 	for k, v := range r.Headers {
 		if headers[k], err = ctx.RenderString(v); err != nil {
-			return nil, err
+			return nil, specErr(err)
 		}
 	}
 	body, err := ctx.Render(r.Body)
 	if err != nil {
-		return nil, err
+		return nil, specErr(err)
 	}
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
 		if err != nil {
-			return nil, err
+			return nil, specErr(err)
 		}
 		reader = bytes.NewReader(b)
 		if _, ok := headers["Content-Type"]; !ok {
@@ -69,12 +69,12 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 	timeout := 30 * time.Second
 	if r.Timeout != "" {
 		if timeout, err = time.ParseDuration(r.Timeout); err != nil {
-			return nil, fmt.Errorf("bad timeout: %w", err)
+			return nil, specErr(fmt.Errorf("bad timeout: %w", err))
 		}
 	}
 	req, err := http.NewRequest(method, u.String(), reader)
 	if err != nil {
-		return nil, err
+		return nil, specErr(err)
 	}
 	for k, v := range headers {
 		req.Header.Set(k, v)
@@ -84,10 +84,13 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 	start := time.Now()
 	resp, err := client.Do(req)
 	if err != nil {
-		return nil, err
+		return nil, transportErr(err)
 	}
 	defer resp.Body.Close()
-	raw, _ := io.ReadAll(resp.Body)
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, transportErr(err)
+	}
 	var parsed any
 	if json.Unmarshal(raw, &parsed) != nil {
 		parsed = nil
@@ -107,14 +110,18 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step) (map[string]any, 
 		DurationMs: time.Since(start).Milliseconds(),
 	}
 	response := map[string]any{
-		"status": float64(resp.StatusCode), "headers": hdrAny, "body": parsed, "raw": string(raw),
+		"status": float64(resp.StatusCode), "headers": hdrAny, "raw": string(raw),
 		"duration_ms": float64(step.Response.DurationMs),
+	}
+	if parsed != nil { // body is absent for non-JSON responses
+		response["body"] = parsed
 	}
 	out := map[string]any{}
 	for name, path := range r.Extract {
 		v, ok := lookup(response, path)
 		if !ok {
-			return nil, fmt.Errorf("extract %q: path %q not found in response", name, path)
+			return nil, assertErr(fmt.Errorf("extract %q: path %q not found in response (HTTP %d, body: %s)",
+				name, path, resp.StatusCode, snippet(raw)))
 		}
 		out[name] = v
 	}
@@ -127,7 +134,7 @@ func execTransform(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 	for k, v := range n.Transform.Set {
 		r, err := ctx.Render(v)
 		if err != nil {
-			return nil, fmt.Errorf("set %q: %w", k, err)
+			return nil, specErr(fmt.Errorf("set %q: %w", k, err))
 		}
 		out[k] = r
 	}
@@ -153,21 +160,21 @@ func execAssertion(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 		if c.Equals != nil {
 			exp, err := ctx.Render(c.Equals)
 			if err != nil {
-				return nil, err
+				return nil, specErr(err)
 			}
 			add(c, "equals", exp, actual, found && jsonEqual(exp, actual))
 		}
 		if c.Contains != nil {
 			exp, err := ctx.Render(c.Contains)
 			if err != nil {
-				return nil, err
+				return nil, specErr(err)
 			}
 			add(c, "contains", exp, actual, found && contains(actual, exp))
 		}
 		if c.Matches != "" {
 			re, err := regexp.Compile(c.Matches)
 			if err != nil {
-				return nil, fmt.Errorf("bad regex %q: %w", c.Matches, err)
+				return nil, specErr(fmt.Errorf("bad regex %q: %w", c.Matches, err))
 			}
 			add(c, "matches", c.Matches, actual, found && re.MatchString(fmt.Sprint(actual)))
 		}
@@ -181,7 +188,7 @@ func execAssertion(ctx *Context, n flow.Node, step *report.Step) (map[string]any
 		}
 	}
 	if failed > 0 {
-		return nil, fmt.Errorf("%d assertion(s) failed", failed)
+		return nil, assertErr(fmt.Errorf("%d assertion(s) failed", failed))
 	}
 	return map[string]any{"passed": true}, nil
 }
@@ -219,4 +226,13 @@ func toFloat(v any) (float64, bool) {
 		return float64(t), true
 	}
 	return 0, false
+}
+
+func snippet(b []byte) string {
+	const max = 200
+	s := strings.TrimSpace(string(b))
+	if len(s) > max {
+		return s[:max] + "..."
+	}
+	return s
 }

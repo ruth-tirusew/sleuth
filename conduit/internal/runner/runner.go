@@ -55,6 +55,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 			if err != nil {
 				step.Status = report.Failed
 				step.Error = err.Error()
+				step.ErrorKind = kindOf(err)
 			} else {
 				step.Status = report.Passed
 				ctx.SetNode(n.ID, out)

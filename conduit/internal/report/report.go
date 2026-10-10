@@ -36,6 +36,8 @@ type Step struct {
 	Checks     []CheckResult  `json:"checks,omitempty"`
 	Output     map[string]any `json:"output,omitempty"`
 	Error      string         `json:"error,omitempty"`
+	// ErrorKind is set on failed steps: assertion, infrastructure or spec.
+	ErrorKind string `json:"error_kind,omitempty"`
 }
 
 type HTTPRequest struct {
@@ -95,7 +97,11 @@ func Print(w io.Writer, r *Run) {
 			}
 		}
 		if s.Error != "" {
-			fmt.Fprintf(w, "     error: %s\n", s.Error)
+			if s.ErrorKind != "" {
+				fmt.Fprintf(w, "     error [%s]: %s\n", s.ErrorKind, s.Error)
+			} else {
+				fmt.Fprintf(w, "     error: %s\n", s.Error)
+			}
 		}
 	}
 	fmt.Fprintf(w, "\n%d steps in %dms\n", len(r.Steps), r.DurationMs)

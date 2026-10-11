@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"conduit/internal/report"
+	"assay/internal/report"
 )
 
 // asyncServer answers {"status":"PENDING"} until the n-th call, then {"status":"DONE", "id": 9}.
@@ -132,5 +132,92 @@ nodes:
 `)
 	if w := step(r, "wait"); w.ErrorKind != KindSpec || *calls != 1 {
 		t.Fatalf("kind=%q calls=%d", w.ErrorKind, *calls)
+	}
+}
+
+func pollContractFlow(mode string) string {
+	return `
+version: 1
+name: t
+nodes:
+  - id: wait
+    kind: poll
+    contract: ` + mode + `
+    poll:
+      interval: 10ms
+      timeout: 5s
+      request: {url: "{{ .env.base }}/users/7"}
+      until:
+        - {path: nodes.wait.response.body.name, exists: true}
+`
+}
+
+// pollHandler answers `pending` until the n-th call, then `final`.
+func pollHandler(n int32, pending, final string, pendingStatus int) http.HandlerFunc {
+	var calls int32
+	return func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) < n {
+			w.WriteHeader(pendingStatus)
+			fmt.Fprint(w, pending)
+			return
+		}
+		fmt.Fprint(w, final)
+	}
+}
+
+func TestPollContractIgnoresIntermediateShapeAndChecksSatisfyingAttempt(t *testing.T) {
+	// the PENDING body violates the schema, but only the final one counts
+	r := runContract(t, pollContractFlow("api"), pollHandler(3, `{"status":"PENDING"}`, `{"id":7,"name":"x"}`, 200))
+	w := step(r, "wait")
+	if w.Status != report.Passed || w.Poll.Attempts != 3 || w.Contract == nil || len(w.Contract.Violations) != 0 || w.Contract.Mode != "fail" {
+		t.Fatalf("%+v %+v", w, w.Contract)
+	}
+}
+
+func TestPollContractViolationIsContractKindNotInfraOrTimeout(t *testing.T) {
+	start := time.Now()
+	r := runContract(t, pollContractFlow("api"), pollHandler(2, `{"status":"PENDING"}`, `{"id":"7","name":"x"}`, 200))
+	w := step(r, "wait")
+	if w.Status != report.Failed || w.ErrorKind != KindContract || len(w.Contract.Violations) == 0 {
+		t.Fatalf("%+v %+v", w, w.Contract)
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatal("a satisfied poll must not wait out its timeout")
+	}
+}
+
+func TestPollContractUndocumentedStatusOnEarlierAttemptIsKept(t *testing.T) {
+	r := runContract(t, pollContractFlow("api"), pollHandler(3, `{}`, `{"id":7,"name":"x"}`, 202))
+	w := step(r, "wait")
+	if w.ErrorKind != KindContract || len(w.Contract.Violations) != 1 || !undocumented(w.Contract.Violations[0]) {
+		t.Fatalf("%+v %+v", w, w.Contract)
+	}
+}
+
+func TestPollContractWarnModeRecordsButPasses(t *testing.T) {
+	r := runContract(t, pollContractFlow("{source: api, on_violation: warn}"), pollHandler(2, `{}`, `{"id":"7","name":"x"}`, 200))
+	w := step(r, "wait")
+	if w.Status != report.Passed || w.Contract.Mode != "warn" || len(w.Contract.Violations) != 1 {
+		t.Fatalf("%+v %+v", w, w.Contract)
+	}
+}
+
+func TestPollContractUnknownOperationStopsAtOnce(t *testing.T) {
+	var hits int32
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - id: wait
+    kind: poll
+    contract: api
+    poll:
+      interval: 10ms
+      timeout: 5s
+      request: {url: "{{ .env.base }}/nope"}
+      until: [{path: nodes.wait.response.status, equals: 200}]
+`, func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hits, 1) })
+	if w := step(r, "wait"); w.ErrorKind != KindContract || atomic.LoadInt32(&hits) > 1 {
+		t.Fatalf("hits=%d %+v", hits, w)
 	}
 }

@@ -12,8 +12,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"conduit/internal/flow"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/report"
 )
 
 func (c *dbConns) mongoClient(name, dsn string, timeout time.Duration) (cl *mongo.Client, reused bool, err error) {

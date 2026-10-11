@@ -12,9 +12,9 @@ import (
 	"strings"
 	"time"
 
-	"conduit/internal/flow"
-	"conduit/internal/registry"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/registry"
+	"assay/internal/report"
 )
 
 var httpClient = &http.Client{}

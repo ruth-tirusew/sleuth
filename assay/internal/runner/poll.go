@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"time"
 
-	"conduit/internal/flow"
-	"conduit/internal/registry"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/registry"
+	"assay/internal/report"
 )
 
 const (
@@ -53,16 +53,58 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 				return nil, specErr(fmt.Errorf("bad timeout: %w", err))
 			}
 		}
+		// Intermediate answers ("PENDING") legitimately differ from the final shape, so each
+		// attempt is checked in warn mode and the verdict is made once, in finish: the
+		// satisfying attempt's findings plus any undocumented status seen along the way.
+		// Only request-side findings are deterministic enough to stop early.
+		var attemptContract *flow.Contract
+		var carried []report.Violation
+		if n.Contract != nil {
+			attemptContract = &flow.Contract{Source: n.Contract.Source, OnViolation: "warn"}
+		}
 		attempt = func(remaining time.Duration) (map[string]any, int, int, error) {
 			r := req
 			r.Timeout = minDuration(reqTimeout, remaining).String()
-			out, err := execRequest(ctx, flow.Node{ID: n.ID, Kind: flow.KindRequest, Request: &r}, step, specs)
+			out, err := execRequest(ctx, flow.Node{ID: n.ID, Kind: flow.KindRequest, Request: &r, Contract: attemptContract}, step, specs)
+			if cr := step.Contract; cr != nil {
+				for _, v := range cr.Violations {
+					if undocumented(v) {
+						carried = append(carried, v)
+					}
+				}
+				if n.Contract.OnViolation == "warn" {
+					cr.Mode = "warn"
+				} else {
+					cr.Mode = "fail"
+				}
+				for _, v := range cr.Violations {
+					if v.Where != "response" && cr.Mode == "fail" { // operation/request: same every attempt
+						return nil, 0, 0, contractErr(fmt.Errorf("poll request disagrees with %s contract: [%s] %s %s", cr.Source, v.Where, v.Path, v.Message))
+					}
+				}
+			}
 			if err != nil {
 				return nil, 0, 0, err
 			}
 			return out, step.Response.Status, 0, nil
 		}
 		finish = func(result map[string]any) (map[string]any, error) {
+			if cr := step.Contract; cr != nil {
+				seen := map[string]bool{}
+				for _, v := range cr.Violations {
+					seen[v.Message] = true
+				}
+				for _, v := range carried {
+					if !seen[v.Message] {
+						seen[v.Message] = true
+						cr.Violations = append(cr.Violations, v)
+					}
+				}
+				if len(cr.Violations) > 0 && cr.Mode == "fail" {
+					return nil, contractErr(fmt.Errorf("poll response: %d contract violation(s) against %s (first: [%s] %s %s)",
+						len(cr.Violations), cr.Source, cr.Violations[0].Where, cr.Violations[0].Path, cr.Violations[0].Message))
+				}
+			}
 			response, _ := result["response"].(map[string]any)
 			outputs, err := extractOutputs(response, extract)
 			if err != nil {
@@ -118,10 +160,10 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 		a.ElapsedMs, a.Status, a.RowCount = time.Since(start).Milliseconds(), status, rows
 		lastErr = nil
 		switch {
-		case aerr != nil && kindOf(aerr) == KindSpec:
+		case aerr != nil && (kindOf(aerr) == KindSpec || kindOf(aerr) == KindContract):
 			a.Error = aerr.Error()
 			res.History, res.Attempts = append(res.History, a), i
-			return nil, aerr // the flow is broken; retrying cannot help
+			return nil, aerr // the flow or contract is broken; retrying cannot help
 		case aerr != nil:
 			a.Error, lastErr = aerr.Error(), aerr
 		default:

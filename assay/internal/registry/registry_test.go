@@ -127,3 +127,21 @@ func TestOpenAPI30NullableIsUpgraded(t *testing.T) {
 		t.Fatal("non-string must still fail")
 	}
 }
+
+func TestJSONSchemaPickIsDeterministic(t *testing.T) {
+	obj := map[string]any{"content": map[string]any{
+		"application/problem+json": map[string]any{"schema": map[string]any{"title": "problem"}},
+		"application/json":         map[string]any{"schema": map[string]any{"title": "plain"}},
+		"application/a+json":       map[string]any{"schema": map[string]any{"title": "a"}},
+	}}
+	for i := 0; i < 50; i++ {
+		sc, ptr := jsonSchema(obj, "#/r")
+		if sc.(map[string]any)["title"] != "plain" || ptr != "#/r/content/application~1json/schema" {
+			t.Fatalf("run %d: %v %s", i, sc, ptr)
+		}
+	}
+	delete(obj["content"].(map[string]any), "application/json")
+	if sc, _ := jsonSchema(obj, "#/r"); sc.(map[string]any)["title"] != "a" {
+		t.Fatalf("want sorted +json fallback, got %v", sc)
+	}
+}

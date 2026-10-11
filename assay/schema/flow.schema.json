@@ -1,7 +1,7 @@
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
-  "$id": "https://conduit.local/schema/flow.schema.json",
-  "title": "Conduit flow spec v1",
+  "$id": "https://assay.local/schema/flow.schema.json",
+  "title": "Assay flow spec v1",
   "type": "object",
   "required": [
     "version",
@@ -105,7 +105,7 @@
               }
             }
           ],
-          "description": "Request nodes only: validate the call against the OpenAPI document named under contracts: in the env file."
+          "description": "Request nodes, and poll nodes that poll a request: validate the call against the OpenAPI document named under contracts: in the env file."
         },
         "poll": {
           "type": "object",

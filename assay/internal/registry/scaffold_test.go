@@ -39,11 +39,11 @@ func TestNodeID(t *testing.T) {
 }
 
 // Every scaffolded request body must satisfy its own schema. Opt-in against a real
-// document: CONDUIT_TEST_OPENAPI=/path/or/url go test ./internal/registry
+// document: ASSAY_TEST_OPENAPI=/path/or/url go test ./internal/registry
 func TestSkeletonsSatisfyTheirSchemas(t *testing.T) {
-	loc := os.Getenv("CONDUIT_TEST_OPENAPI")
+	loc := os.Getenv("ASSAY_TEST_OPENAPI")
 	if loc == "" {
-		t.Skip("CONDUIT_TEST_OPENAPI not set")
+		t.Skip("ASSAY_TEST_OPENAPI not set")
 	}
 	s, err := Load(loc)
 	if err != nil {

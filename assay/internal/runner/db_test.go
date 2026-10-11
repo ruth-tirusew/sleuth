@@ -5,8 +5,8 @@ import (
 	"strings"
 	"testing"
 
-	"conduit/internal/flow"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/report"
 )
 
 func runDB(t *testing.T, dsn, yaml string) *report.Run {
@@ -50,9 +50,9 @@ func TestDBUnknownConnectionAndUnsetVarAreSpecErrors(t *testing.T) {
 	if q := step(r, "q"); q.ErrorKind != KindSpec || !strings.Contains(q.Error, "not defined") {
 		t.Fatalf("%+v", q)
 	}
-	os.Unsetenv("CONDUIT_TEST_DSN_UNSET")
-	r = runDB(t, "${CONDUIT_TEST_DSN_UNSET}", dbFlow)
-	if q := step(r, "q"); q.ErrorKind != KindSpec || !strings.Contains(q.Error, "CONDUIT_TEST_DSN_UNSET") {
+	os.Unsetenv("ASSAY_TEST_DSN_UNSET")
+	r = runDB(t, "${ASSAY_TEST_DSN_UNSET}", dbFlow)
+	if q := step(r, "q"); q.ErrorKind != KindSpec || !strings.Contains(q.Error, "ASSAY_TEST_DSN_UNSET") {
 		t.Fatalf("%+v", q)
 	}
 }
@@ -72,11 +72,11 @@ func TestDBNodeValidation(t *testing.T) {
 	}
 }
 
-// Against a real Postgres: CONDUIT_TEST_PG_DSN=postgres://... go test ./internal/runner -run LivePG
+// Against a real Postgres: ASSAY_TEST_PG_DSN=postgres://... go test ./internal/runner -run LivePG
 func TestLivePGReadOnlyAndTypes(t *testing.T) {
-	dsn := os.Getenv("CONDUIT_TEST_PG_DSN")
+	dsn := os.Getenv("ASSAY_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("CONDUIT_TEST_PG_DSN not set")
+		t.Skip("ASSAY_TEST_PG_DSN not set")
 	}
 	r := runDB(t, dsn, `
 version: 1
@@ -106,12 +106,12 @@ nodes:
     assert: [{path: nodes.too_many.row_count, equals: 3}]
   - id: write
     kind: db
-    db: {connection: main, query: "SELECT 1; CREATE TABLE conduit_should_not_exist(x int)"}
+    db: {connection: main, query: "SELECT 1; CREATE TABLE assay_should_not_exist(x int)"}
     assert: [{path: nodes.write.row_count, equals: 1}]
   - id: still_no_table
     kind: db
     needs: []
-    db: {connection: main, query: "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = 'conduit_should_not_exist'"}
+    db: {connection: main, query: "SELECT count(*) AS n FROM information_schema.tables WHERE table_name = 'assay_should_not_exist'"}
     assert: [{path: nodes.still_no_table.rows.0.n, equals: 0}]
 `)
 	if s := step(r, "types"); s.Status != report.Passed {

@@ -1,4 +1,4 @@
-// Tiny mock service for trying conduit locally: go run ./examples/mock
+// Tiny mock service for trying assay locally: go run ./examples/mock
 package main
 
 import (

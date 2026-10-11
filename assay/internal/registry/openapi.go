@@ -209,12 +209,24 @@ func (s *Spec) operation(key, base string, op map[string]any) *Operation {
 // object, and its location in the document.
 func jsonSchema(obj map[string]any, ptr string) (any, string) {
 	content, _ := obj["content"].(map[string]any)
-	for mt, v := range content {
+	// Map iteration is random, so pick deterministically: application/json first,
+	// then the other +json types in sorted order.
+	var mts []string
+	for mt := range content {
 		if mt == "application/json" || strings.HasSuffix(mt, "+json") {
-			m, _ := v.(map[string]any)
-			if sc, ok := m["schema"]; ok {
-				return sc, ptr + "/content/" + ptrEsc(mt) + "/schema"
-			}
+			mts = append(mts, mt)
+		}
+	}
+	sort.Slice(mts, func(i, j int) bool {
+		if (mts[i] == "application/json") != (mts[j] == "application/json") {
+			return mts[i] == "application/json"
+		}
+		return mts[i] < mts[j]
+	})
+	for _, mt := range mts {
+		m, _ := content[mt].(map[string]any)
+		if sc, ok := m["schema"]; ok {
+			return sc, ptr + "/content/" + ptrEsc(mt) + "/schema"
 		}
 	}
 	return nil, ""

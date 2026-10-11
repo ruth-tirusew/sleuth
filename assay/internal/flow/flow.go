@@ -213,7 +213,7 @@ func (f *Flow) Validate() error {
 	for _, n := range f.Nodes {
 		if c := n.Contract; c != nil {
 			if n.Kind != KindRequest && n.Kind != KindPoll {
-				return fmt.Errorf("node %s: contract is only valid on request nodes", n.ID)
+				return fmt.Errorf("node %s: contract is only valid on request and poll nodes", n.ID)
 			}
 			if c.Source == "" {
 				return fmt.Errorf("node %s: contract.source is required", n.ID)
@@ -261,8 +261,8 @@ func (f *Flow) Validate() error {
 					return fmt.Errorf("node %s: bad poll duration %q", n.ID, d)
 				}
 			}
-			if n.Contract != nil {
-				return fmt.Errorf("node %s: contract is not supported on poll nodes", n.ID)
+			if n.Contract != nil && n.Poll.Request == nil {
+				return fmt.Errorf("node %s: contract on a poll node needs poll.request (db polls have no contract)", n.ID)
 			}
 		case KindDB:
 			if err := n.DB.validate(n.ID); err != nil {

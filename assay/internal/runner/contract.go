@@ -6,9 +6,9 @@ import (
 	"strconv"
 	"strings"
 
-	"conduit/internal/flow"
-	"conduit/internal/registry"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/registry"
+	"assay/internal/report"
 )
 
 // loadContracts loads every OpenAPI source referenced by the flow. A missing or
@@ -119,7 +119,7 @@ func (c *contractRun) checkResponse(status int, body any) {
 			keys = append(keys, k)
 		}
 		sort.Strings(keys)
-		c.violate("response", "$", fmt.Sprintf("status %s is not documented for %s (documented: %s)",
+		c.violate("response", "$", fmt.Sprintf(undocumentedFmt,
 			strconv.Itoa(status), c.op.Key, strings.Join(keys, ", ")))
 		return
 	}
@@ -132,6 +132,14 @@ func (c *contractRun) checkResponse(status int, body any) {
 		return
 	}
 	c.validate("response", c.op.ResponsePtrFor(status), body)
+}
+
+const undocumentedFmt = "status %s is not documented for %s (documented: %s)"
+
+// undocumented reports whether v is an undocumented-status finding, which a poll keeps
+// from every attempt (other response findings only count on the satisfying attempt).
+func undocumented(v report.Violation) bool {
+	return v.Where == "response" && strings.Contains(v.Message, " is not documented for ")
 }
 
 func isEmptySchema(s any) bool {

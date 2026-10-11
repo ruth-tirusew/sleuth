@@ -1,4 +1,4 @@
-name: conduit-flow
+name: assay-flow
 
 # Phase 1: manual trigger only, no gating (proves the runner works headless).
 on:
@@ -28,22 +28,22 @@ jobs:
         run: go test ./...
 
       - name: Build
-        run: go build -o conduit ./cmd/conduit
+        run: go build -o assay ./cmd/assay
 
       - name: Validate flow
-        run: ./conduit validate "${{ inputs.flow }}"
+        run: ./assay validate "${{ inputs.flow }}"
 
       - name: Run flow
         env:
           # Every secret named in the env file's `secrets:` list must be set here.
           APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
-        run: ./conduit run -env "${{ inputs.env_file }}" -out evidence/run.json "${{ inputs.flow }}"
+        run: ./assay run -env "${{ inputs.env_file }}" -out evidence/run.json "${{ inputs.flow }}"
 
       - name: Upload evidence
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: conduit-evidence
+          name: assay-evidence
           path: evidence/
           if-no-files-found: warn
           retention-days: 30

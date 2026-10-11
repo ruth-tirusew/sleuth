@@ -1,4 +1,4 @@
-module conduit
+module assay
 
 go 1.23.4
 

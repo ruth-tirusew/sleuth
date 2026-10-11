@@ -5,8 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"conduit/internal/flow"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/report"
 )
 
 type Options struct {

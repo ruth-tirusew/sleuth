@@ -1,5 +1,5 @@
 # Build output and run results
-/conduit
+/assay
 /evidence/
 
 # Service-specific flows, env files and scripts used for local testing against real

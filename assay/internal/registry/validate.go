@@ -12,7 +12,7 @@ import (
 	"golang.org/x/text/message"
 )
 
-const specURL = "https://conduit.invalid/openapi.json"
+const specURL = "https://assay.invalid/openapi.json"
 
 var printer = message.NewPrinter(language.English)
 

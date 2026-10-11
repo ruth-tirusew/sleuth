@@ -1,4 +1,4 @@
-// conduit runs API flow specs and emits evidence.
+// assay runs API flow specs and emits evidence.
 //
 // Exit codes:
 //
@@ -18,17 +18,17 @@ import (
 	"strings"
 	"time"
 
-	"conduit/internal/flow"
-	"conduit/internal/registry"
-	"conduit/internal/report"
-	"conduit/internal/runner"
+	"assay/internal/flow"
+	"assay/internal/registry"
+	"assay/internal/report"
+	"assay/internal/runner"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: conduit <run|validate|scaffold> [flags] ...")
+		fmt.Fprintln(os.Stderr, "usage: assay <run|validate|scaffold> [flags] ...")
 		return 2
 	}
 	cmd := args[0]
@@ -39,7 +39,7 @@ func run(args []string) int {
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
 	outPath := fs.String("out", "", "evidence JSON path (default evidence/<flow>-<timestamp>.json)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 {
-		fmt.Fprintf(os.Stderr, "usage: conduit %s [flags] <flow.yaml>\n", cmd)
+		fmt.Fprintf(os.Stderr, "usage: assay %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
 	f, err := flow.Load(fs.Arg(0))
@@ -106,7 +106,7 @@ func exitCode(r *report.Run) int {
 }
 
 // scaffold prints a starter node (plus a status assertion) for one operation of a
-// provider's OpenAPI document: conduit scaffold -env e.yaml -source api "GET /users/{id}"
+// provider's OpenAPI document: assay scaffold -env e.yaml -source api "GET /users/{id}"
 func scaffold(args []string) int {
 	fs := flag.NewFlagSet("scaffold", flag.ContinueOnError)
 	envPath := fs.String("env", "", "env file whose contracts: names the OpenAPI source")
@@ -115,8 +115,8 @@ func scaffold(args []string) int {
 	id := fs.String("id", "", "node id (default: derived from the operation)")
 	list := fs.Bool("list", false, "list the operations in the contract instead")
 	if err := fs.Parse(args); err != nil || *source == "" || (!*list && fs.NArg() != 1) {
-		fmt.Fprintln(os.Stderr, `usage: conduit scaffold -source NAME (-env env.yaml | -spec openapi.json) [-id ID] "GET /path"`)
-		fmt.Fprintln(os.Stderr, "       conduit scaffold -source NAME (-env ... | -spec ...) -list")
+		fmt.Fprintln(os.Stderr, `usage: assay scaffold -source NAME (-env env.yaml | -spec openapi.json) [-id ID] "GET /path"`)
+		fmt.Fprintln(os.Stderr, "       assay scaffold -source NAME (-env ... | -spec ...) -list")
 		return 2
 	}
 	var spec *registry.Spec

@@ -13,8 +13,8 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 
-	"conduit/internal/flow"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/report"
 )
 
 func runDBs(t *testing.T, dbs map[string]string, yaml string) *report.Run {
@@ -33,11 +33,11 @@ func runDBs(t *testing.T, dbs map[string]string, yaml string) *report.Run {
 }
 
 // Connection reuse + polling a query, against a scratch Postgres database:
-// CONDUIT_TEST_PG_DSN=postgres://.../scratch go test ./internal/runner -run LivePGPoll
+// ASSAY_TEST_PG_DSN=postgres://.../scratch go test ./internal/runner -run LivePGPoll
 func TestLivePGPollAndConnectionReuse(t *testing.T) {
-	dsn := os.Getenv("CONDUIT_TEST_PG_DSN")
+	dsn := os.Getenv("ASSAY_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("CONDUIT_TEST_PG_DSN not set")
+		t.Skip("ASSAY_TEST_PG_DSN not set")
 	}
 	bg := context.Background()
 	admin, err := pgx.Connect(bg, dsn)
@@ -45,14 +45,14 @@ func TestLivePGPollAndConnectionReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Close(bg)
-	admin.Exec(bg, "DROP TABLE IF EXISTS conduit_poll_probe")
-	if _, err := admin.Exec(bg, "CREATE TABLE conduit_poll_probe(id int, state text)"); err != nil {
+	admin.Exec(bg, "DROP TABLE IF EXISTS assay_poll_probe")
+	if _, err := admin.Exec(bg, "CREATE TABLE assay_poll_probe(id int, state text)"); err != nil {
 		t.Fatal(err)
 	}
-	defer admin.Exec(bg, "DROP TABLE IF EXISTS conduit_poll_probe")
+	defer admin.Exec(bg, "DROP TABLE IF EXISTS assay_poll_probe")
 	go func() { // the "async work": a row appears a moment after the poll starts
 		time.Sleep(450 * time.Millisecond)
-		admin.Exec(bg, "INSERT INTO conduit_poll_probe VALUES (7, 'SETTLED')")
+		admin.Exec(bg, "INSERT INTO assay_poll_probe VALUES (7, 'SETTLED')")
 	}()
 
 	r := runDBs(t, map[string]string{"main": dsn}, `
@@ -71,7 +71,7 @@ nodes:
       timeout: 10s
       db:
         connection: main
-        query: "SELECT id, state FROM conduit_poll_probe WHERE state = $1"
+        query: "SELECT id, state FROM assay_poll_probe WHERE state = $1"
         args: [SETTLED]
         extract: {id: rows.0.id}
       until:
@@ -94,9 +94,9 @@ nodes:
 }
 
 func TestLivePGPollTimeoutAndSpecError(t *testing.T) {
-	dsn := os.Getenv("CONDUIT_TEST_PG_DSN")
+	dsn := os.Getenv("ASSAY_TEST_PG_DSN")
 	if dsn == "" {
-		t.Skip("CONDUIT_TEST_PG_DSN not set")
+		t.Skip("ASSAY_TEST_PG_DSN not set")
 	}
 	r := runDBs(t, map[string]string{"main": dsn}, `
 version: 1
@@ -126,11 +126,11 @@ nodes:
 }
 
 // Mongo, against a scratch database that the test creates and drops:
-// CONDUIT_TEST_MONGO_DSN=mongodb://127.0.0.1:27017/?replicaSet=rs0 go test ./internal/runner -run LiveMongo
+// ASSAY_TEST_MONGO_DSN=mongodb://127.0.0.1:27017/?replicaSet=rs0 go test ./internal/runner -run LiveMongo
 func TestLiveMongo(t *testing.T) {
-	dsn := os.Getenv("CONDUIT_TEST_MONGO_DSN")
+	dsn := os.Getenv("ASSAY_TEST_MONGO_DSN")
 	if dsn == "" {
-		t.Skip("CONDUIT_TEST_MONGO_DSN not set")
+		t.Skip("ASSAY_TEST_MONGO_DSN not set")
 	}
 	bg := context.Background()
 	cl, err := mongo.Connect(options.Client().ApplyURI(dsn))
@@ -138,7 +138,7 @@ func TestLiveMongo(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer cl.Disconnect(bg)
-	const dbName = "conduit_scratch"
+	const dbName = "assay_scratch"
 	db := cl.Database(dbName)
 	defer db.Drop(bg)
 	id1 := bson.NewObjectID()
@@ -164,7 +164,7 @@ nodes:
     db:
       type: mongo
       connection: m
-      database: conduit_scratch
+      database: assay_scratch
       collection: loans
       filter: {status: ACTIVE}
       sort: [{amount: -1}]
@@ -180,7 +180,7 @@ nodes:
     db:
       type: mongo
       connection: m
-      database: conduit_scratch
+      database: assay_scratch
       collection: loans
       filter: {_id: {$oid: "%s"}}
     assert:
@@ -192,7 +192,7 @@ nodes:
     db:
       type: mongo
       connection: m
-      database: conduit_scratch
+      database: assay_scratch
       collection: loans
       pipeline:
         - {$group: {_id: "$status", n: {$sum: 1}, total: {$sum: "$amount"}}}
@@ -207,7 +207,7 @@ nodes:
     db:
       type: mongo
       connection: m
-      database: conduit_scratch
+      database: assay_scratch
       collection: loans
       filter: {ref: "{{ .nodes.active.out.top }}"}
     assert: [{path: nodes.templated.rows.0.amount, equals: 250}]
@@ -216,20 +216,20 @@ nodes:
     poll:
       interval: 100ms
       timeout: 10s
-      db: {type: mongo, connection: m, database: conduit_scratch, collection: settle, filter: {state: SETTLED}}
+      db: {type: mongo, connection: m, database: assay_scratch, collection: settle, filter: {state: SETTLED}}
       until: [{path: nodes.settled.row_count, equals: 1}]
   - id: writes
     kind: db
     db:
       type: mongo
       connection: m
-      database: conduit_scratch
+      database: assay_scratch
       collection: loans
       pipeline: [{$match: {}}, {$out: loans_copy}]
     assert: [{path: nodes.writes.row_count, gt: 0}]
   - id: bad_op
     kind: db
-    db: {type: mongo, connection: m, database: conduit_scratch, collection: loans, filter: {amount: {$bogus: 1}}}
+    db: {type: mongo, connection: m, database: assay_scratch, collection: loans, filter: {amount: {$bogus: 1}}}
     assert: [{path: nodes.bad_op.row_count, gt: 0}]
   - id: unreachable
     kind: db
@@ -241,7 +241,7 @@ nodes:
     assert: [{path: nodes.wrong_type.row_count, gt: 0}]
   - id: too_many
     kind: db
-    db: {type: mongo, connection: m, database: conduit_scratch, collection: loans, max_rows: 2}
+    db: {type: mongo, connection: m, database: assay_scratch, collection: loans, max_rows: 2}
     assert: [{path: nodes.too_many.row_count, gt: 0}]
 `, id1.Hex(), id1.Hex()))
 	for _, id := range []string{"active", "by_id", "totals", "templated", "settled"} {
@@ -264,7 +264,7 @@ nodes:
 	if n, _ := db.Collection("loans_copy").CountDocuments(bg, bson.M{}); n != 0 {
 		t.Fatalf("$out ran! %d docs written", n)
 	}
-	if ev := step(r, "active").DB; ev == nil || ev.Type != "mongo" || ev.RowCount != 2 || !strings.HasPrefix(ev.Query, "find conduit_scratch.loans") {
+	if ev := step(r, "active").DB; ev == nil || ev.Type != "mongo" || ev.RowCount != 2 || !strings.HasPrefix(ev.Query, "find assay_scratch.loans") {
 		t.Errorf("evidence: %+v", ev)
 	}
 }

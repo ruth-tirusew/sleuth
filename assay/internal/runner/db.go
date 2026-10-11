@@ -13,8 +13,8 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 
-	"conduit/internal/flow"
-	"conduit/internal/report"
+	"assay/internal/flow"
+	"assay/internal/report"
 )
 
 const (

@@ -1,6 +1,6 @@
-# Conduit
+# Assay
 
-Conduit runs **flows**: ordered API calls, assertions and database checks described in YAML, with an
+Assay runs **flows**: ordered API calls, assertions and database checks described in YAML, with an
 evidence report of exactly what was sent, what came back, and why a step passed or failed.
 
 - **Flows are data.** A flow is a small DAG of nodes; values from earlier nodes feed later ones.
@@ -11,18 +11,18 @@ evidence report of exactly what was sent, what came back, and why a step passed 
 
 ## Quick start
 
-    go build -o conduit ./cmd/conduit
+    go build -o assay ./cmd/assay
     go run ./examples/mock &                      # a tiny local service to try it against
-    ./conduit validate examples/login-and-profile.flow.yaml
-    APP_PASSWORD=s3cret ./conduit run -env examples/local.env.yaml examples/login-and-profile.flow.yaml
+    ./assay validate examples/login-and-profile.flow.yaml
+    APP_PASSWORD=s3cret ./assay run -env examples/local.env.yaml examples/login-and-profile.flow.yaml
 
 Commands:
 
 | Command | Purpose |
 |---|---|
-| `conduit validate <flow>` | Check a flow and print its execution order |
-| `conduit run [-env env.yaml] [-out evidence.json] <flow>` | Run a flow |
-| `conduit scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
+| `assay validate <flow>` | Check a flow and print its execution order |
+| `assay run [-env env.yaml] [-out evidence.json] <flow>` | Run a flow |
+| `assay scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
 
 ## Writing a flow
 
@@ -168,19 +168,22 @@ Bind a request node to a provider's OpenAPI 3.x document:
       contract: api                        # or {source: api, on_violation: warn}
       request: {url: "{{ .env.base_url }}/users/42"}
 
-Conduit finds the operation by method and path template, then validates the outgoing JSON body (a violating
+Assay finds the operation by method and path template, then validates the outgoing JSON body (a violating
 request is **not sent**) and the response (documented status, JSON Schema). Schemas are checked by a full JSON
 Schema 2020-12 implementation, the dialect of OpenAPI 3.1; OpenAPI 3.0 `nullable` is upgraded automatically.
 
 - A violation fails the step with `error_kind: contract`, unless the node sets `on_violation: warn`, which records
   the finding and lets the step pass (for accepted drift and deliberate negative tests).
+- On a poll node the contract is judged once: the attempt that satisfied `until`, plus any undocumented status seen on
+  earlier attempts. Intermediate bodies (`PENDING`) are not held to the final schema. See
+  [`docs/decisions/0003-poll-contracts.md`](docs/decisions/0003-poll-contracts.md).
 - Things the contract is too thin to check, such as a documented response with an empty schema, are recorded as
   `notes` / coverage gaps, not violations.
 - Every run that used a contract gets a top-level `drift` block in the evidence and a "Contract drift" section in the
   CLI report: all findings (failing vs accepted), with step, operation, where, path and message, plus coverage gaps.
   Drift never crashes a run; the remaining steps still execute.
 
-`conduit scaffold` prints a starter request node and a status assertion for one operation, with path parameters as
+`assay scaffold` prints a starter request node and a status assertion for one operation, with path parameters as
 `{{ .env.<param> }}`, required query/header parameters, and a body skeleton built from the required properties.
 Optional auth headers are listed as comments rather than emitted.
 
@@ -224,13 +227,13 @@ When a run has several kinds of failure, 2 wins over 1, and 1 over 3.
 Some tests run against real servers and are skipped unless pointed at one. Use a scratch database; the tests create
 and drop their own data:
 
-    CONDUIT_TEST_PG_DSN=postgres://user:pw@localhost:5432/scratch?sslmode=disable go test ./internal/runner -run LivePG
-    CONDUIT_TEST_MONGO_DSN=mongodb://127.0.0.1:27017/ go test ./internal/runner -run LiveMongo
-    CONDUIT_TEST_OPENAPI=/path/or/url/openapi.json go test ./internal/registry -run Skeletons
+    ASSAY_TEST_PG_DSN=postgres://user:pw@localhost:5432/scratch?sslmode=disable go test ./internal/runner -run LivePG
+    ASSAY_TEST_MONGO_DSN=mongodb://127.0.0.1:27017/ go test ./internal/runner -run LiveMongo
+    ASSAY_TEST_OPENAPI=/path/or/url/openapi.json go test ./internal/registry -run Skeletons
 
 Layout:
 
-    cmd/conduit/        CLI (run, validate, scaffold) and exit codes
+    cmd/assay/        CLI (run, validate, scaffold) and exit codes
     internal/flow/      flow spec types, validation, DAG ordering
     internal/runner/    execution: request, assertion, transform, poll, db nodes; context and env
     internal/registry/  OpenAPI loading, operation matching, schema validation, scaffolding
@@ -244,6 +247,6 @@ Layout:
 
 - Postgres is the only SQL database supported.
 - No parallel execution of independent nodes, and no poll backoff (the interval is fixed).
-- `contract:` is not supported on poll nodes.
+- `contract:` works on poll nodes that poll a request, not on db polls.
 - Secrets come from environment variables only; there is no vault integration.
 - Only `application/json` bodies are validated against contracts, and OpenAPI `servers` base paths are ignored.

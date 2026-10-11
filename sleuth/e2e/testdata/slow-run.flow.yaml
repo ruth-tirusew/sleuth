@@ -1,0 +1,16 @@
+version: 1
+name: slow-run
+description: Without a run timeout this would take a minute (a hang with the default request timeout, and a long poll).
+nodes:
+  - {id: hang, kind: request, request: {url: "{{ .env.base_url }}/hang"}}
+  - {id: after, kind: transform, needs: [hang], transform: {set: {x: 1}}}
+  - id: start
+    kind: request
+    request: {method: POST, url: "{{ .env.base_url }}/jobs", query: {ready_after: "100000"}, extract: {id: body.id}}
+  - id: wait
+    kind: poll
+    poll:
+      interval: 100ms
+      timeout: 60s
+      request: {url: "{{ .env.base_url }}/jobs/{{ .nodes.start.out.id }}"}
+      until: [{path: nodes.wait.response.body.status, equals: DONE}]

@@ -81,7 +81,7 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]
 			return nil, specErr(fmt.Errorf("bad timeout: %w", err))
 		}
 	}
-	req, err := http.NewRequest(method, u.String(), reader)
+	req, err := http.NewRequestWithContext(ctx.runCtx(), method, u.String(), reader)
 	if err != nil {
 		return nil, specErr(err)
 	}

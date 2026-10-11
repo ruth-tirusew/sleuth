@@ -28,7 +28,10 @@ type Run struct {
 	StartedAt  time.Time `json:"started_at"`
 	DurationMs int64     `json:"duration_ms"`
 	Parallel   int       `json:"parallel,omitempty"` // max nodes run at once; absent when serial
-	Steps      []Step    `json:"steps"`
+	// TimedOut is set when the run's overall timeout (Timeout) stopped it before it finished.
+	TimedOut bool   `json:"timed_out,omitempty"`
+	Timeout  string `json:"timeout,omitempty"`
+	Steps    []Step `json:"steps"`
 	// Drift summarises contract disagreements across the run; absent when no step used a contract.
 	Drift *DriftSummary `json:"drift,omitempty"`
 }
@@ -203,6 +206,9 @@ func replaceAll(s string, forms []string) string {
 // Print renders a human-readable summary.
 func Print(w io.Writer, r *Run) {
 	fmt.Fprintf(w, "Flow: %s  [%s]\n\n", r.Flow, strings.ToUpper(r.Status))
+	if r.TimedOut {
+		fmt.Fprintf(w, "Run stopped: its timeout (%s) was reached. Steps in progress were stopped and the rest were not started.\n\n", r.Timeout)
+	}
 	icon := map[string]string{Passed: "✔", Failed: "✘", Skipped: "–"}
 	for _, s := range r.Steps {
 		fmt.Fprintf(w, " %s %-20s %-10s %5dms", icon[s.Status], s.ID, s.Kind, s.DurationMs)

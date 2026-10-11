@@ -60,10 +60,12 @@ func run(args []string) int {
 	mergeShapes := fs.Bool("merge", false, "with -record-shapes: widen an existing snapshot with this run instead of replacing it")
 	force := fs.Bool("force", false, "with -record-shapes: replace an existing snapshot (the old one is kept as FILE.prev) or record from a failed run")
 	shapeFail := fs.String("shape-drift-fail", "", "fail when responses differ from the snapshot by at least this severity: breaking | any (default: report only)")
+	runTimeout := fs.Duration("timeout", 0, "stop the whole run after this long (e.g. 10m): work in flight is stopped, unstarted nodes are skipped, exit 3")
+	junitPath := fs.String("junit", "", "also write the results as JUnit XML to this file, for CI")
 	specFail := fs.String("spec-drift-fail", "", "fail when a contract source differs from its saved baseline by at least this severity: breaking | review (default: report only)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") ||
 		(*shapeFail != "" && *shapeFail != "breaking" && *shapeFail != "any") || (*shapeFail != "" && *shapesPath == "") ||
-		((*mergeShapes || *force) && *recordShapes == "") {
+		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 {
 		fmt.Fprintf(os.Stderr, "usage: sleuth %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
@@ -107,7 +109,7 @@ func run(args []string) int {
 		flowSHA := fmt.Sprintf("%x", sha256.Sum256(flowBytes))
 		envName := strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath))
 		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
-			CaptureShapes: snap != nil || *recordShapes != ""})
+			CaptureShapes: snap != nil || *recordShapes != "", Timeout: *runTimeout})
 		if err != nil {
 			return fail("error: ", err)
 		}
@@ -124,6 +126,11 @@ func run(args []string) int {
 		}
 		if err != nil {
 			return fail("error writing evidence: ", err)
+		}
+		if *junitPath != "" {
+			if err := report.WriteJUnit(*junitPath, r, append(known, secrets...)); err != nil {
+				return fail("error writing JUnit XML: ", err)
+			}
 		}
 		var printed strings.Builder
 		report.Print(&printed, r)

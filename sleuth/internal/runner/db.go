@@ -134,7 +134,7 @@ func queryDB(ctx *Context, env *EnvConfig, conns *dbConns, d *flow.DB, step *rep
 	}
 	step.DB = &report.DBResult{Type: d.Kind(), Connection: d.Connection}
 
-	cctx, cancel := context.WithTimeout(context.Background(), timeout)
+	cctx, cancel := context.WithTimeout(ctx.runCtx(), timeout)
 	defer cancel()
 	start := time.Now()
 	var rows []any

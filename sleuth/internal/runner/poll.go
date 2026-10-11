@@ -237,7 +237,13 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 			delay = remaining - interval // keep room for one last attempt
 		}
 		res.History[len(res.History)-1].DelayMs = delay.Milliseconds()
-		time.Sleep(delay)
+		select {
+		case <-time.After(delay):
+		case <-ctx.runCtx().Done(): // the run's own timeout: stop polling now
+		}
+		if ctx.runCtx().Err() != nil {
+			break
+		}
 	}
 
 	settleUnsatisfied()

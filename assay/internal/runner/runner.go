@@ -15,6 +15,29 @@ type Options struct {
 	EnvName string
 	// Parallel is the maximum number of independent nodes run at once; 0 or 1 is serial.
 	Parallel int
+	// OnEvent, if set, is told about progress as it happens. It is called from a single
+	// goroutine (the scheduler), in order, and must not block for long. Steps in events
+	// carry unmasked evidence: mask before they leave the process.
+	OnEvent func(Event)
+}
+
+// Event is a progress notification from Run.
+type Event struct {
+	Type string // run_start | step_start | step_done
+	At   time.Time
+	// run_start: every node and what it waits for.
+	Nodes []EventNode
+	// step_start: the step's id and kind. step_done: the finished step (including skipped).
+	ID   string
+	Kind string
+	Step *report.Step
+}
+
+// EventNode describes one node of the plan in a run_start event.
+type EventNode struct {
+	ID    string   `json:"id"`
+	Kind  string   `json:"kind"`
+	Needs []string `json:"needs,omitempty"` // needs: plus nodes.<id> references
 }
 
 // Run executes the flow. It returns an error only for setup problems
@@ -63,6 +86,20 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		pending[i] = len(deps[i])
 	}
 
+	emit := func(e Event) {
+		if opts.OnEvent != nil {
+			e.At = time.Now().UTC()
+			opts.OnEvent(e)
+		}
+	}
+	if opts.OnEvent != nil {
+		plan := make([]EventNode, len(order))
+		for i, n := range order {
+			plan[i] = EventNode{ID: n.ID, Kind: n.Kind, Needs: n.Deps()}
+		}
+		emit(Event{Type: "run_start", Nodes: plan})
+	}
+
 	steps := make([]report.Step, len(order))
 	jobs := make(chan int, len(order))
 	done := make(chan int, len(order))
@@ -98,6 +135,10 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	}
 	finish = func(i int) {
 		finished++
+		if opts.OnEvent != nil {
+			st := steps[i]
+			emit(Event{Type: "step_done", ID: st.ID, Kind: st.Kind, Step: &st})
+		}
 		if steps[i].Status == report.Failed {
 			run.Status = report.Failed
 		}
@@ -115,6 +156,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	inflight := 0
 	for finished < len(order) {
 		for inflight < workers && len(ready) > 0 {
+			emit(Event{Type: "step_start", ID: order[ready[0]].ID, Kind: order[ready[0]].Kind})
 			jobs <- ready[0]
 			ready = ready[1:]
 			inflight++
@@ -130,6 +172,11 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	run.Steps = steps
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
+	published := map[string][]string{}
+	for name, sp := range specs {
+		published[name] = sp.Operations()
+	}
+	report.AddCoverage(run, published)
 	return run, secrets, nil
 }
 

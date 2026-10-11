@@ -121,12 +121,21 @@ func WriteJSON(path string, r *Run, secrets []string) error {
 	if err != nil {
 		return err
 	}
+	return os.WriteFile(path, MaskJSON(b, secrets), 0o644)
+}
+
+// MaskJSON replaces every secret value in marshalled JSON with ***. Anything that
+// leaves the process (evidence files, a UI) must go through it.
+func MaskJSON(b []byte, secrets []string) []byte {
 	s := string(b)
 	for _, sec := range secrets {
+		if sec == "" {
+			continue
+		}
 		esc, _ := json.Marshal(sec)
 		s = strings.ReplaceAll(s, strings.Trim(string(esc), `"`), "***")
 	}
-	return os.WriteFile(path, []byte(s), 0o644)
+	return []byte(s)
 }
 
 // Print renders a human-readable summary.

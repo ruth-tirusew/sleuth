@@ -15,6 +15,18 @@ type DriftSummary struct {
 	Failing    int            `json:"failing"`    // findings that failed their step
 	Accepted   int            `json:"accepted"`   // findings recorded under on_violation: warn
 	Operations int            `json:"operations"` // distinct operations with at least one finding
+	// Sources says, per contract source, how much of the published registry this run exercised.
+	Sources []SourceCoverage `json:"sources,omitempty"`
+}
+
+// SourceCoverage is the registry-wide view of one contract source: the operations the
+// document publishes against the ones this run actually called. An operation nobody calls
+// is one nobody is checking against live behaviour, so it can drift unnoticed.
+type SourceCoverage struct {
+	Source    string   `json:"source"`
+	Total     int      `json:"total"`
+	Exercised int      `json:"exercised"`
+	Untested  []string `json:"untested,omitempty"` // "METHOD /path", sorted
 }
 
 type DriftFinding struct {
@@ -70,6 +82,43 @@ func SummarizeDrift(r *Run) {
 	r.Drift = d
 }
 
+// AddCoverage records, for each contract source, which of its published operations the
+// run called. all maps a source name to every operation it publishes ("METHOD /path").
+// An operation counts as exercised when a step called it, whether or not the call passed.
+func AddCoverage(r *Run, all map[string][]string) {
+	if r.Drift == nil {
+		return
+	}
+	called := map[string]map[string]bool{}
+	for _, s := range r.Steps {
+		if c := s.Contract; c != nil && c.Operation != "" {
+			if called[c.Source] == nil {
+				called[c.Source] = map[string]bool{}
+			}
+			called[c.Source][c.Operation] = true
+		}
+	}
+	names := make([]string, 0, len(all))
+	for name := range all {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		sc := SourceCoverage{Source: name, Total: len(all[name])}
+		for _, op := range all[name] {
+			if called[name][op] {
+				sc.Exercised++
+			} else {
+				sc.Untested = append(sc.Untested, op)
+			}
+		}
+		sort.Strings(sc.Untested)
+		r.Drift.Sources = append(r.Drift.Sources, sc)
+	}
+}
+
+const maxUntestedShown = 15
+
 // printDrift renders the drift section of the CLI report.
 func printDrift(w io.Writer, d *DriftSummary) {
 	if d == nil {
@@ -88,6 +137,20 @@ func printDrift(w io.Writer, d *DriftSummary) {
 				tag = "warn"
 			}
 			fmt.Fprintf(w, "  [%s] %s %s [%s] %s %s  (step %s)\n", tag, f.Source, f.Operation, f.Where, f.Path, f.Message, f.Step)
+		}
+	}
+	for _, sc := range d.Sources {
+		pct := 100
+		if sc.Total > 0 {
+			pct = sc.Exercised * 100 / sc.Total
+		}
+		fmt.Fprintf(w, "Registry coverage: %s: %d of %d published operation(s) exercised (%d%%)\n", sc.Source, sc.Exercised, sc.Total, pct)
+		for i, op := range sc.Untested {
+			if i == maxUntestedShown {
+				fmt.Fprintf(w, "  ... and %d more (all listed in the evidence JSON)\n", len(sc.Untested)-maxUntestedShown)
+				break
+			}
+			fmt.Fprintf(w, "  not called: %s\n", op)
 		}
 	}
 	if len(d.Coverage) > 0 {

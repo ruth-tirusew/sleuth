@@ -357,3 +357,20 @@ nodes:
 		t.Fatalf("%+v %+v", a, a.Contract)
 	}
 }
+
+func TestRunReportsRegistryCoverage(t *testing.T) {
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: after, kind: transform, needs: [a], transform: {set: {x: 1}}}
+`, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":7,"name":"x"}`)) })
+	if r.Drift == nil || len(r.Drift.Sources) != 1 {
+		t.Fatalf("%+v", r.Drift)
+	}
+	sc := r.Drift.Sources[0]
+	if sc.Source != "api" || sc.Total != 3 || sc.Exercised != 1 || strings.Join(sc.Untested, "|") != "GET /empty|POST /users" {
+		t.Fatalf("%+v", sc)
+	}
+}

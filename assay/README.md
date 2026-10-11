@@ -22,6 +22,7 @@ Commands:
 |---|---|
 | `assay validate [--parallel N] <flow>` | Check a flow and print its execution order; with `--parallel`, also which nodes would run together |
 | `assay run [-env env.yaml] [-out evidence.json] [--parallel N] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1) |
+| `assay serve [-dir flows] [-env default.env.yaml] [-addr 127.0.0.1:8787]` | Local web dashboard: pick a flow, run it (optionally in parallel), watch it live; each flow uses its paired `<name>.env.yaml` |
 | `assay scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
 
 ## Writing a flow
@@ -183,6 +184,10 @@ Schema 2020-12 implementation, the dialect of OpenAPI 3.1; OpenAPI 3.0 `nullable
 - Every run that used a contract gets a top-level `drift` block in the evidence and a "Contract drift" section in the
   CLI report: all findings (failing vs accepted), with step, operation, where, path and message, plus coverage gaps.
   Drift never crashes a run; the remaining steps still execute.
+- The same block has a registry-wide view, `drift.sources`: for each contract source, how many of the operations the
+  spec publishes this run actually called, and which ones it did not ("Registry coverage" in the CLI report). An
+  operation no flow calls is one nobody checks against the live service, so it can drift unnoticed. This is
+  informational: it never fails a run. `assay scaffold -list` shows what a spec publishes; scaffold a node for each gap.
 
 `assay scaffold` prints a starter request node and a status assertion for one operation, with path parameters as
 `{{ .env.<param> }}`, required query/header parameters, and a body skeleton built from the required properties.
@@ -190,7 +195,7 @@ Optional auth headers are listed as comments rather than emitted.
 
 Design notes: [`docs/decisions/0001-contract-source.md`](docs/decisions/0001-contract-source.md) (why provider
 published OpenAPI) and [`docs/decisions/0002-drift-reporting.md`](docs/decisions/0002-drift-reporting.md) (how drift
-is reported).
+is reported) and [`docs/decisions/0005-registry-coverage.md`](docs/decisions/0005-registry-coverage.md) (Phase 4 scope).
 
 ## Evidence and results
 
@@ -239,10 +244,30 @@ Layout:
     internal/runner/    execution: request, assertion, transform, poll, db nodes; context and env
     internal/registry/  OpenAPI loading, operation matching, schema validation, scaffolding
     internal/report/    evidence model, drift summary, CLI report
+    internal/serve/     the local dashboard (server and embedded page)
     schema/             JSON Schema for flow files
     examples/           a sample flow, env file and mock service
     docs/decisions/     design decisions
     .github/workflows/  a manually triggered workflow that runs a flow headless
+
+## Dashboard (experiment)
+
+    APP_PASSWORD=s3cret assay serve -dir examples -env examples/local.env.yaml
+
+prints a link such as `http://127.0.0.1:8787/#token=...`. Each flow runs with its own environment: `foo.flow.yaml`
+(or `foo.yaml`) in `-dir` pairs with `foo.env.yaml` next to it, and a flow with no pair uses the `-env` default. The page
+shows which one a flow will use, and if that environment cannot work (an `${VAR}` or a secret that is not set in the
+environment `assay serve` was started with) it says so and disables Run instead of failing mid-run. The page lists the flows in `-dir`, runs one with the
+parallelism you choose, and shows it live: a timeline with one bar per step (so overlap is visible), the status of
+each step as it finishes, and for any step its request, response, checks, contract findings, poll attempts or query.
+After a run it shows contract drift and registry coverage. Each run's evidence JSON is still written to `-evidence`
+(default `evidence/`), same as `assay run`.
+
+It runs flows with this process's secrets, so it is locked down: it only listens on loopback (any other `-addr`
+is refused), every API call needs the token, requests with a non-loopback `Host` are rejected, the browser can only
+pick a flow from the directory listing (never a path), secret values are masked in everything sent to the browser, and
+only one run goes at a time. A client never chooses an env file either: the pairing is decided from the file listing. It is a single embedded page with no external resources. See
+[`docs/decisions/0006-dashboard.md`](docs/decisions/0006-dashboard.md).
 
 ## Parallel execution
 

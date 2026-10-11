@@ -94,3 +94,11 @@ func TestBrokenTemplateExit2(t *testing.T) {
 		t.Fatalf("want exit 2, got %d", code)
 	}
 }
+
+func TestServeRefusesNonLoopbackAddress(t *testing.T) {
+	for _, addr := range []string{"0.0.0.0:0", ":0", "192.168.1.9:8787"} {
+		if code := run([]string{"serve", "-addr", addr, "-dir", t.TempDir()}); code != 2 {
+			t.Fatalf("%s: exit %d, want 2", addr, code)
+		}
+	}
+}

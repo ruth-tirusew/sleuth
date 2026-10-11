@@ -11,6 +11,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"os"
@@ -22,18 +24,22 @@ import (
 	"assay/internal/registry"
 	"assay/internal/report"
 	"assay/internal/runner"
+	"assay/internal/serve"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: assay <run|validate|scaffold> [flags] ...")
+		fmt.Fprintln(os.Stderr, "usage: assay <run|validate|scaffold|serve> [flags] ...")
 		return 2
 	}
 	cmd := args[0]
 	if cmd == "scaffold" {
 		return scaffold(args[1:])
+	}
+	if cmd == "serve" {
+		return serveDashboard(args[1:])
 	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
@@ -89,6 +95,47 @@ func run(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 	return 2
+}
+
+// serveDashboard runs the local web dashboard: assay serve [-dir flows] [-env env.yaml]
+func serveDashboard(args []string) int {
+	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
+	dir := fs.String("dir", ".", "directory whose .yaml/.yml files are the flows")
+	envPath := fs.String("env", "", "default env file, for flows without a paired <name>.env.yaml next to them")
+	addr := fs.String("addr", "127.0.0.1:8787", "listen address (loopback only)")
+	evidence := fs.String("evidence", "evidence", "directory for each run's evidence JSON (empty: don't write)")
+	if err := fs.Parse(args); err != nil || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: assay serve [-dir flows] [-env env.yaml] [-addr 127.0.0.1:8787] [-evidence dir]")
+		return 2
+	}
+	if err := serve.CheckAddr(*addr); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if _, err := os.Stat(*dir); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if *envPath != "" { // a typo here is a startup error; unset variables are reported per flow on the page
+		if st, err := os.Stat(*envPath); err != nil || st.IsDir() {
+			fmt.Fprintln(os.Stderr, "error: -env", *envPath, "is not a readable file")
+			return 2
+		}
+	}
+	var raw [16]byte
+	if _, err := rand.Read(raw[:]); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	token := hex.EncodeToString(raw[:])
+	srv := serve.New(serve.Config{Dir: *dir, EnvPath: *envPath, EvidenceDir: *evidence, Token: token})
+	fmt.Printf("assay dashboard: http://%s/#token=%s\n", *addr, token)
+	fmt.Println("runs flows with this process's secrets; only this machine can reach it, and only with that token. Ctrl-C to stop.")
+	if err := srv.Serve(*addr); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	return 0
 }
 
 // printWaves shows what --parallel would run together, so a missing needs: shows up

@@ -105,6 +105,18 @@ func (c *EnvConfig) ContractLocation(source string) (string, error) {
 	return v, nil
 }
 
+// SecretValues returns the current values of the env file's secrets (missing ones are
+// skipped; Run reports those). Callers use it to mask output while a run is in progress.
+func SecretValues(env *EnvConfig) []string {
+	var out []string
+	for _, name := range env.Secrets {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // Context is the run context: env, secrets and the outputs of completed nodes.
 type Context struct {
 	mu   sync.RWMutex // nodes may run concurrently; guards data

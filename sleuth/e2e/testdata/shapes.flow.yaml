@@ -1,0 +1,12 @@
+version: 1
+name: shapes
+description: Three responses whose structure is recorded; none of them is in the service's OpenAPI document.
+nodes:
+  - {id: health, kind: request, request: {url: "{{ .env.base_url }}/health"}}
+  - {id: profile, kind: request, request: {url: "{{ .env.base_url }}/profile"}}
+  - {id: orders, kind: request, request: {url: "{{ .env.base_url }}/orders"}}
+  - id: ok
+    kind: assertion
+    assert:
+      - {path: nodes.profile.response.status, equals: 200}
+      - {path: nodes.orders.response.status, equals: 200}

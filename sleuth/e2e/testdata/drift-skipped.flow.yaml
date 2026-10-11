@@ -1,0 +1,13 @@
+version: 1
+name: drift-skipped
+description: The only contract node never runs because an earlier step fails; spec drift must still be reported.
+nodes:
+  - {id: first, kind: request, request: {url: "{{ .env.base_url }}/health"}}
+  - id: gate
+    kind: assertion
+    assert: [{path: nodes.first.response.status, equals: 500}]
+  - id: health
+    kind: request
+    needs: [gate]
+    contract: api
+    request: {url: "{{ .env.base_url }}/health"}

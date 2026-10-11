@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -171,5 +172,100 @@ func TestNonJSONContentIsRecorded(t *testing.T) {
 	op, _ := s.Find("POST", "/x")
 	if len(op.RequestOther) != 1 || op.RequestOther[0] != "application/xml" || op.ResponseOther["200"][0] != "text/plain" || op.ResponseOther["204"] != nil {
 		t.Fatalf("%+v", op)
+	}
+}
+
+// Parallel runs validate from several nodes at once; the compiler and the cache of compiled
+// schemas are shared, so this must be safe (run with -race).
+func TestValidateIsSafeFromManyGoroutines(t *testing.T) {
+	s := load(t)
+	user, _ := s.Find("GET", "/users/1")
+	post, _ := s.Find("POST", "/users")
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var ptr string
+			var val any
+			if i%2 == 0 {
+				ptr, val = user.ResponsePtrFor(200), map[string]any{"id": 1, "name": "a"}
+			} else {
+				ptr, val = post.RequestPtr, map[string]any{"name": "a"}
+			}
+			if issues, err := s.Validate(ptr, val); err != nil || len(issues) != 0 {
+				t.Errorf("goroutine %d: %v %v", i, issues, err)
+			}
+		}(i)
+	}
+	wg.Wait()
+}
+
+// OpenAPI 3.0 schemas must validate exactly as 3.0 means them, not be rejected as invalid 2020-12.
+func TestOpenAPI30CompatibilitySet(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "o.json")
+	os.WriteFile(p, []byte(`{"openapi":"3.0.3","paths":{
+	 "/x":{"get":{"responses":{"200":{"content":{"application/json":{"schema":{"type":"object","properties":{
+	   "excl":   {"type":"number","minimum":0,"exclusiveMinimum":true},
+	   "inclLo": {"type":"number","minimum":0,"exclusiveMinimum":false},
+	   "exclHi": {"type":"integer","maximum":10,"exclusiveMaximum":true},
+	   "plain":  {"type":"string","nullable":true},
+	   "color":  {"type":"string","enum":["red","blue"],"nullable":true},
+	   "owner":  {"$ref":"#/components/schemas/Owner","nullable":true},
+	   "mixed":  {"allOf":[{"$ref":"#/components/schemas/Owner"}],"nullable":true},
+	   "notnull":{"type":"string","nullable":false},
+	   "minimum":{"type":"boolean"},
+	   "nullable":{"type":"integer"}
+	 }}}}}}}}},
+	 "components":{"schemas":{"Owner":{"type":"object","required":["id"],"properties":{"id":{"type":"integer"}}}}}}`), 0o644)
+	s, err := Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	op, _ := s.Find("GET", "/x")
+	ptr := op.ResponsePtrFor(200)
+	cases := []struct {
+		name  string
+		value map[string]any
+		valid bool
+	}{
+		{"exclusive minimum: above", map[string]any{"excl": 0.5}, true},
+		{"exclusive minimum: at the bound", map[string]any{"excl": 0}, false},
+		{"exclusiveMinimum false keeps minimum inclusive", map[string]any{"inclLo": 0}, true},
+		{"exclusive maximum: at the bound", map[string]any{"exclHi": 10}, false},
+		{"exclusive maximum: below", map[string]any{"exclHi": 9}, true},
+		{"nullable string: null", map[string]any{"plain": nil}, true},
+		{"nullable string: wrong type", map[string]any{"plain": 3}, false},
+		{"nullable enum: null", map[string]any{"color": nil}, true},
+		{"nullable enum: member", map[string]any{"color": "red"}, true},
+		{"nullable enum: not a member", map[string]any{"color": "green"}, false},
+		{"nullable $ref: null", map[string]any{"owner": nil}, true},
+		{"nullable $ref: valid object", map[string]any{"owner": map[string]any{"id": 1}}, true},
+		{"nullable $ref: invalid object", map[string]any{"owner": map[string]any{"id": "x"}}, false},
+		{"nullable allOf: null", map[string]any{"mixed": nil}, true},
+		{"nullable false: null rejected", map[string]any{"notnull": nil}, false},
+		{"a property called minimum is untouched", map[string]any{"minimum": true}, true},
+		{"a property called nullable is untouched", map[string]any{"nullable": 4}, true},
+	}
+	for _, c := range cases {
+		issues, err := s.Validate(ptr, c.value)
+		if err != nil {
+			t.Fatalf("%s: the schema must compile: %v", c.name, err)
+		}
+		if (len(issues) == 0) != c.valid {
+			t.Errorf("%s: valid=%v, issues=%v", c.name, c.valid, issues)
+		}
+	}
+}
+
+// A 3.1 document is already 2020-12 and is not rewritten.
+func TestOpenAPI31IsNotRewritten(t *testing.T) {
+	p := filepath.Join(t.TempDir(), "o.json")
+	os.WriteFile(p, []byte(`{"openapi":"3.1.0","paths":{"/x":{"get":{"responses":{"200":{"content":{"application/json":{"schema":
+	  {"type":"number","exclusiveMinimum":0}}}}}}}}}`), 0o644)
+	s, _ := Load(p)
+	op, _ := s.Find("GET", "/x")
+	if issues, err := s.Validate(op.ResponsePtrFor(200), 0); err != nil || len(issues) == 0 {
+		t.Errorf("3.1 numeric exclusiveMinimum 0 must reject 0: %v %v", issues, err)
 	}
 }

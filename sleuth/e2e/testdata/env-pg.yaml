@@ -1,0 +1,2 @@
+databases:
+  pg: ${PG_DSN}

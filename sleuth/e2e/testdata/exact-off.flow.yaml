@@ -1,0 +1,8 @@
+version: 1
+name: exact-off
+description: One off in the last digit must fail, not round to a pass.
+nodes:
+  - {id: big, kind: request, request: {url: "{{ .env.base_url }}/big"}}
+  - id: off_by_one
+    kind: assertion
+    assert: [{path: nodes.big.response.body.id, equals: 9007199254740992}]

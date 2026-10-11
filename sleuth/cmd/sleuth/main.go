@@ -13,6 +13,7 @@ package main
 import (
 	"bytes"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -27,6 +28,7 @@ import (
 	"sleuth/internal/report"
 	"sleuth/internal/runner"
 	"sleuth/internal/serve"
+	"sleuth/internal/shape"
 )
 
 func main() { os.Exit(run(os.Args[1:])) }
@@ -53,8 +55,17 @@ func run(args []string) int {
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
 	outPath := fs.String("out", "", "evidence JSON path (default evidence/<flow>-<timestamp>.json)")
 	parallel := fs.Int("parallel", 1, "run up to N independent nodes at once (order is set by needs: and nodes.<id> references only)")
+	shapesPath := fs.String("shapes", "", "compare this run's response shapes with a recorded snapshot (see -record-shapes)")
+	recordShapes := fs.String("record-shapes", "", "after a passing run, record the shape of each step's response to this file")
+	mergeShapes := fs.Bool("merge", false, "with -record-shapes: widen an existing snapshot with this run instead of replacing it")
+	force := fs.Bool("force", false, "with -record-shapes: replace an existing snapshot (the old one is kept as FILE.prev) or record from a failed run")
+	shapeFail := fs.String("shape-drift-fail", "", "fail when responses differ from the snapshot by at least this severity: breaking | any (default: report only)")
+	runTimeout := fs.Duration("timeout", 0, "stop the whole run after this long (e.g. 10m): work in flight is stopped, unstarted nodes are skipped, exit 3")
+	junitPath := fs.String("junit", "", "also write the results as JUnit XML to this file, for CI")
 	specFail := fs.String("spec-drift-fail", "", "fail when a contract source differs from its saved baseline by at least this severity: breaking | review (default: report only)")
-	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") {
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") ||
+		(*shapeFail != "" && *shapeFail != "breaking" && *shapeFail != "any") || (*shapeFail != "" && *shapesPath == "") ||
+		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 {
 		fmt.Fprintf(os.Stderr, "usage: sleuth %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
@@ -81,10 +92,29 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 2
 		}
-		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath)), Parallel: *parallel, FailOnSpecDrift: *specFail})
-		if err != nil {
-			fmt.Fprintln(os.Stderr, "error:", err)
+		// From here on anything printed can carry a secret (a URL in an error, a value in a
+		// failed check), so it all goes through the same masking as the evidence file.
+		known := env.SecretValues()
+		fail := func(prefix string, err error) int {
+			fmt.Fprintln(os.Stderr, report.MaskText(prefix+err.Error(), known))
 			return 2
+		}
+		var snap *shape.Snapshot
+		if *shapesPath != "" { // a snapshot that cannot be read is a setup error, before anything runs
+			if snap, err = shape.Load(*shapesPath); err != nil {
+				return fail("error: ", err)
+			}
+		}
+		flowBytes, _ := os.ReadFile(fs.Arg(0))
+		flowSHA := fmt.Sprintf("%x", sha256.Sum256(flowBytes))
+		envName := strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath))
+		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
+			CaptureShapes: snap != nil || *recordShapes != "", Timeout: *runTimeout})
+		if err != nil {
+			return fail("error: ", err)
+		}
+		if snap != nil {
+			report.AddBehaviourDrift(r, report.BehaviourInput{Path: *shapesPath, Snap: snap, FailOn: *shapeFail, Flow: f.Name, FlowSHA: flowSHA, Now: time.Now()})
 		}
 		out := *outPath
 		if out == "" {
@@ -95,11 +125,25 @@ func run(args []string) int {
 			err = report.WriteJSON(out, r, secrets)
 		}
 		if err != nil {
-			fmt.Fprintln(os.Stderr, "error writing evidence:", err)
-			return 2
+			return fail("error writing evidence: ", err)
 		}
-		report.Print(os.Stdout, r)
+		if *junitPath != "" {
+			if err := report.WriteJUnit(*junitPath, r, append(known, secrets...)); err != nil {
+				return fail("error writing JUnit XML: ", err)
+			}
+		}
+		var printed strings.Builder
+		report.Print(&printed, r)
+		fmt.Print(report.MaskText(printed.String(), append(known, secrets...)))
 		fmt.Println("evidence:", out)
+		if *recordShapes != "" {
+			if code := recordShapesFile(*recordShapes, r, f.Name, flowSHA, envName, *mergeShapes, *force); code != 0 {
+				if code == noRecord { // the run's own result is still the exit code
+					return exitCode(r)
+				}
+				return code
+			}
+		}
 		return exitCode(r)
 	}
 	fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
@@ -145,13 +189,17 @@ func snapshotSpec(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: contract source", *source+":", err)
 		return 2
 	}
-	if _, err := registry.Parse(loc, raw); err != nil { // never save something that is not an OpenAPI document
+	sp, err := registry.Parse(loc, raw)
+	if err != nil { // never save something that is not an OpenAPI document
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
 	if _, err := os.Stat(dest); err == nil && !*force {
 		fmt.Fprintf(os.Stderr, "error: %s already exists. It is what drift is measured against; review `sleuth diff %s %s` first, then pass -force to replace it.\n", dest, dest, loc)
 		return 2
+	}
+	if asJSON, err := registry.ToJSON(raw); err == nil { // a YAML spec is saved as JSON, like any baseline
+		raw = asJSON
 	}
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, raw, "", "  "); err != nil {
@@ -167,7 +215,7 @@ func snapshotSpec(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	fmt.Printf("saved %s (%d operations) to %s\n", *source, len(mustOps(raw, loc)), dest)
+	fmt.Printf("saved %s (%d operations) to %s\n", *source, len(sp.Operations()), dest)
 	if configured == "" {
 		rel, relErr := filepath.Rel(filepath.Dir(*envPath), dest)
 		if relErr != nil {
@@ -176,14 +224,6 @@ func snapshotSpec(args []string) int {
 		fmt.Printf("add to %s so runs compare against it:\n  baselines:\n    %s: %s\n", *envPath, *source, rel)
 	}
 	return 0
-}
-
-func mustOps(raw []byte, loc string) []string {
-	sp, err := registry.Parse(loc, raw)
-	if err != nil {
-		return nil
-	}
-	return sp.Operations()
 }
 
 // diffSpecs compares two versions of a published OpenAPI document and reports what a client
@@ -313,6 +353,9 @@ func printWaves(f *flow.Flow, n int) {
 
 func exitCode(r *report.Run) int {
 	kinds := map[string]bool{}
+	if r.Drift != nil && r.Drift.Behaviour != nil && r.Drift.Behaviour.Failing {
+		kinds[runner.KindContract] = true // the system answered, but not as it did when the snapshot was recorded
+	}
 	if r.Drift != nil {
 		for _, sd := range r.Drift.SpecDrift {
 			if sd.Failing { // the spec moved under the flow: the same class as a contract failure

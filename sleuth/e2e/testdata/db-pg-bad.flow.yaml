@@ -1,0 +1,7 @@
+version: 1
+name: db-pg-bad
+nodes:
+  - id: bad
+    kind: db
+    db: {connection: pg, query: "SELECT * FROM no_such_table_sleuth_e2e"}
+    assert: [{path: nodes.bad.row_count, equals: 0}]

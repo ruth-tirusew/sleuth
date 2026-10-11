@@ -1,0 +1,9 @@
+version: 1
+name: db-pg
+nodes:
+  - id: one
+    kind: db
+    db: {connection: pg, query: "SELECT $1::int AS one, 'x' AS s", args: [1]}
+    assert:
+      - {path: nodes.one.rows.0.one, equals: 1}
+      - {path: nodes.one.row_count, equals: 1}

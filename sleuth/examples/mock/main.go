@@ -1,29 +1,18 @@
-// Tiny mock service for trying sleuth locally: go run ./examples/mock
+// A small service for trying sleuth locally: go run ./examples/mock
+//
+// It listens on :18099 and accepts alice / s3cret (the credentials examples/local.env.yaml
+// expects). See internal/mockservice for every endpoint, including the published OpenAPI
+// document at /openapi.json.
 package main
 
 import (
-	"encoding/json"
 	"log"
 	"net/http"
+
+	"sleuth/internal/mockservice"
 )
 
 func main() {
-	mux := http.NewServeMux()
-	mux.HandleFunc("POST /login", func(w http.ResponseWriter, r *http.Request) {
-		var b map[string]string
-		_ = json.NewDecoder(r.Body).Decode(&b)
-		if b["password"] != "s3cret" {
-			http.Error(w, `{"error":"bad credentials"}`, 401)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"token": "tok-123", "user_id": 42})
-	})
-	mux.HandleFunc("GET /users/{id}", func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer tok-123" {
-			http.Error(w, `{"error":"unauthorized"}`, 401)
-			return
-		}
-		json.NewEncoder(w).Encode(map[string]any{"id": 42, "username": "alice", "balance": 100.5})
-	})
-	log.Fatal(http.ListenAndServe(":18099", mux))
+	log.Println("mock service on http://localhost:18099 (login: alice / s3cret)")
+	log.Fatal(http.ListenAndServe(":18099", mockservice.New().Handler()))
 }

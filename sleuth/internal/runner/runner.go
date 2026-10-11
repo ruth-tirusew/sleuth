@@ -2,6 +2,7 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"time"
@@ -18,6 +19,13 @@ type Options struct {
 	// FailOnSpecDrift makes the run fail when a contract source differs from its saved baseline
 	// by at least this severity: "breaking" or "review". Empty records the differences only.
 	FailOnSpecDrift string
+	// Timeout, if positive, bounds the whole run. When it passes, requests, queries and poll
+	// waits in flight are stopped, nodes not yet started are skipped, and the run is marked
+	// timed out. Each such step fails as infrastructure: the system did not finish in time.
+	Timeout time.Duration
+	// CaptureShapes records, on each step that returned JSON, the structure of its response (or
+	// database rows) as Step.Shape, so a run can be compared with, or recorded as, a shape snapshot.
+	CaptureShapes bool
 	// OnEvent, if set, is told about progress as it happens. It is called from a single
 	// goroutine (the scheduler), in order, and must not block for long. Steps in events
 	// carry unmasked evidence: mask before they leave the process.
@@ -73,6 +81,11 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	}
 	conns := newDBConns(workers)
 	defer conns.close()
+	if opts.Timeout > 0 {
+		rctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+		defer cancel()
+		ctx.run = rctx
+	}
 	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
 	if workers > 1 {
 		run.Parallel = workers
@@ -163,12 +176,22 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	inflight := 0
 	for finished < len(order) {
 		for inflight < workers && len(ready) > 0 {
-			emit(Event{Type: "step_start", ID: order[ready[0]].ID, Kind: order[ready[0]].Kind})
-			jobs <- ready[0]
+			i := ready[0]
 			ready = ready[1:]
+			if ctx.runCtx().Err() != nil { // past the run's timeout: do not start anything new
+				steps[i] = report.Step{ID: order[i].ID, Kind: order[i].Kind, StartedAt: time.Now().UTC(), Status: report.Skipped,
+					Error: fmt.Sprintf("not started: the run's timeout (%s) was reached", opts.Timeout)}
+				finish(i)
+				continue
+			}
+			emit(Event{Type: "step_start", ID: order[i].ID, Kind: order[i].Kind})
+			jobs <- i
 			inflight++
 		}
 		if inflight == 0 {
+			if len(ready) > 0 {
+				continue // nodes skipped for the timeout released more ready nodes: skip those too
+			}
 			break // unreachable: Order() rejected cycles
 		}
 		finish(<-done)
@@ -177,8 +200,21 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	close(jobs)
 
 	run.Steps = steps
+	if ctx.runCtx().Err() != nil {
+		run.TimedOut = true
+		run.Timeout = opts.Timeout.String()
+		run.Status = report.Failed
+	}
+	if opts.CaptureShapes {
+		for i := range run.Steps {
+			run.Steps[i].Shape = stepShape(&run.Steps[i])
+		}
+	}
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
+	if len(specs) > 0 {
+		report.EnsureDrift(run) // the flow references a contract: report coverage and spec drift even if no call ran
+	}
 	published := map[string][]string{}
 	for name, sp := range specs {
 		published[name] = sp.Operations()
@@ -211,6 +247,11 @@ func execNode(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, specs m
 		step.Status = report.Failed
 		step.Error = err.Error()
 		step.ErrorKind = kindOf(err)
+		if ctx.runCtx().Err() != nil && step.ErrorKind != KindSpec {
+			// whatever the step was doing when the run's timeout passed, it did not finish in time
+			step.ErrorKind = KindInfra
+			step.Error = "stopped: the run's timeout was reached (" + step.Error + ")"
+		}
 	} else {
 		step.Status = report.Passed
 		ctx.SetNode(n.ID, out)

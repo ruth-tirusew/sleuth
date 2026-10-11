@@ -1,0 +1,15 @@
+version: 1
+name: poll-timeout
+nodes:
+  - id: start
+    kind: request
+    request: {method: POST, url: "{{ .env.base_url }}/jobs", query: {ready_after: "1000"}, extract: {id: body.id}}
+  - id: wait
+    kind: poll
+    poll:
+      interval: 100ms
+      timeout: 600ms
+      request: {url: "{{ .env.base_url }}/jobs/{{ .nodes.start.out.id }}"}
+      until:
+        - {path: nodes.wait.response.body.status, equals: DONE}
+  - {id: after, kind: transform, needs: [wait], transform: {set: {x: 1}}}

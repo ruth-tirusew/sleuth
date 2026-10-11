@@ -460,3 +460,42 @@ func TestRunWithUnreadableBaselineIsASetupError(t *testing.T) {
 		t.Fatalf("a drift check that silently did not run must be an error, got %v", err)
 	}
 }
+
+// A flow whose contract node never runs (an earlier step failed) must still compare the
+// spec with its baseline and enforce -spec-drift-fail: the spec moved whether or not
+// this run got as far as calling it.
+func TestSpecDriftGateHoldsWhenNoContractStepRan(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(500) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	os.WriteFile(dir+"/spec.json", []byte(fakeSpec), 0o644)
+	os.WriteFile(dir+"/base.json", []byte(baselineSpec), 0o644)
+	os.WriteFile(dir+"/f.yaml", []byte(`
+version: 1
+name: t
+nodes:
+  - id: login
+    kind: assertion
+    assert: [{path: env.base, equals: nope}]
+  - {id: a, kind: request, needs: [login], contract: api, request: {url: "{{ .env.base }}/users/7"}}
+`), 0o644)
+	f, err := flow.Load(dir + "/f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &EnvConfig{Vars: map[string]string{"base": srv.URL}, Contracts: map[string]string{"api": dir + "/spec.json"},
+		Baselines: map[string]string{"api": "base.json"}, path: dir + "/env.yaml"}
+	r, _, err := Run(f, env, Options{FailOnSpecDrift: "breaking"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if step(r, "a").Status != report.Skipped {
+		t.Fatalf("setup: the contract node should have been skipped: %+v", step(r, "a"))
+	}
+	if r.Drift == nil || len(r.Drift.SpecDrift) != 1 || !r.Drift.SpecDrift[0].Failing || r.Drift.CallsChecked != 0 {
+		t.Fatalf("spec drift must be reported and failing even though no contract step ran: %+v", r.Drift)
+	}
+	if len(r.Drift.Sources) != 1 || r.Drift.Sources[0].Exercised != 0 {
+		t.Fatalf("coverage should show nothing exercised: %+v", r.Drift.Sources)
+	}
+}

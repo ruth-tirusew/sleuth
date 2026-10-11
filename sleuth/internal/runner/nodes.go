@@ -7,7 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/url"
-	"reflect"
 	"regexp"
 	"strings"
 	"time"
@@ -82,7 +81,7 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]
 			return nil, specErr(fmt.Errorf("bad timeout: %w", err))
 		}
 	}
-	req, err := http.NewRequest(method, u.String(), reader)
+	req, err := http.NewRequestWithContext(ctx.runCtx(), method, u.String(), reader)
 	if err != nil {
 		return nil, specErr(err)
 	}
@@ -101,8 +100,8 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]
 	if err != nil {
 		return nil, transportErr(err)
 	}
-	var parsed any
-	if json.Unmarshal(raw, &parsed) != nil {
+	parsed, perr := decodeJSON(raw) // numbers stay exact (json.Number)
+	if perr != nil {
 		parsed = nil
 	}
 	respHeaders := map[string]string{}
@@ -201,7 +200,7 @@ func evalChecks(ctx *Context, checks []flow.Check) (results []report.CheckResult
 			if err != nil {
 				return results, failed, specErr(err)
 			}
-			add(c, "equals", exp, actual, found && jsonEqual(exp, actual))
+			add(c, "equals", exp, actual, found && valuesEqual(exp, actual))
 		}
 		if c.Contains != nil {
 			exp, err := ctx.Render(c.Contains)
@@ -229,24 +228,13 @@ func evalChecks(ctx *Context, checks []flow.Check) (results []report.CheckResult
 	return results, failed, nil
 }
 
-// jsonEqual compares after a JSON round trip so int/float differences don't matter.
-func jsonEqual(a, b any) bool {
-	norm := func(v any) any {
-		bs, _ := json.Marshal(v)
-		var o any
-		_ = json.Unmarshal(bs, &o)
-		return o
-	}
-	return reflect.DeepEqual(norm(a), norm(b))
-}
-
 func contains(actual, want any) bool {
 	switch a := actual.(type) {
 	case string:
 		return strings.Contains(a, fmt.Sprint(want))
 	case []any:
 		for _, x := range a {
-			if jsonEqual(x, want) {
+			if valuesEqual(x, want) {
 				return true
 			}
 		}
@@ -254,12 +242,19 @@ func contains(actual, want any) bool {
 	return false
 }
 
+// toFloat reads a number for gt / lt comparisons. Exactness is not needed for an
+// inequality, so the float64 approximation of a large json.Number is acceptable here.
 func toFloat(v any) (float64, bool) {
 	switch t := v.(type) {
 	case float64:
 		return t, true
 	case int:
 		return float64(t), true
+	case int64:
+		return float64(t), true
+	case json.Number:
+		f, err := t.Float64()
+		return f, err == nil
 	}
 	return 0, false
 }

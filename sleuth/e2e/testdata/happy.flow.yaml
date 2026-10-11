@@ -1,0 +1,30 @@
+version: 1
+name: happy
+nodes:
+  - id: login
+    kind: request
+    request:
+      method: POST
+      url: "{{ .env.base_url }}/login"
+      body: {username: "{{ .env.username }}", password: "{{ .secrets.APP_PASSWORD }}"}
+      extract: {token: body.token, user_id: body.user_id}
+  - id: login_ok
+    kind: assertion
+    assert:
+      - {path: nodes.login.response.status, equals: 200}
+      - {path: nodes.login.out.token, exists: true}
+  - id: auth
+    kind: transform
+    transform: {set: {header: "Bearer {{ .nodes.login.out.token }}"}}
+  - id: profile
+    kind: request
+    request:
+      url: "{{ .env.base_url }}/users/{{ .nodes.login.out.user_id }}"
+      headers: {Authorization: "{{ .nodes.auth.out.header }}"}
+      extract: {balance: body.balance}
+  - id: profile_ok
+    kind: assertion
+    assert:
+      - {path: nodes.profile.response.status, equals: 200}
+      - {path: nodes.profile.response.body.username, equals: "{{ .env.username }}"}
+      - {path: nodes.profile.out.balance, gt: 0}

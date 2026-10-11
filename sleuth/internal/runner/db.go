@@ -2,7 +2,6 @@ package runner
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -33,6 +32,9 @@ type dbConns struct {
 	maxConns int32
 	pg       map[string]*pgxpool.Pool
 	mongo    map[string]*mongo.Client
+	// retired are Mongo clients that failed and were replaced. They are only closed when the
+	// run ends: other parallel nodes may still be mid-operation on them.
+	retired []*mongo.Client
 }
 
 func newDBConns(maxConns int) *dbConns {
@@ -53,6 +55,10 @@ func (c *dbConns) close() {
 		cl.Disconnect(context.Background())
 		delete(c.mongo, k)
 	}
+	for _, cl := range c.retired {
+		cl.Disconnect(context.Background())
+	}
+	c.retired = nil
 }
 
 // pgPool returns the pool for name, or creates one (connections are opened lazily).
@@ -128,13 +134,13 @@ func queryDB(ctx *Context, env *EnvConfig, conns *dbConns, d *flow.DB, step *rep
 	}
 	step.DB = &report.DBResult{Type: d.Kind(), Connection: d.Connection}
 
-	cctx, cancel := context.WithTimeout(context.Background(), timeout)
+	cctx, cancel := context.WithTimeout(ctx.runCtx(), timeout)
 	defer cancel()
 	start := time.Now()
 	var rows []any
 	switch d.Kind() {
 	case flow.DBMongo:
-		rows, err = queryMongo(cctx, ctx, conns, dsn, d, maxRows, timeout, step)
+		rows, err = queryMongo(cctx, ctx, conns, dsn, d, maxRows, step)
 	default:
 		rows, err = queryPostgres(cctx, ctx, conns, dsn, d, maxRows, step)
 	}
@@ -207,9 +213,13 @@ func queryPostgres(cctx context.Context, ctx *Context, conns *dbConns, dsn strin
 	if err != nil {
 		return nil, dbErr(err)
 	}
-	var rows []any
-	if err := json.Unmarshal(raw, &rows); err != nil {
+	decoded, err := decodeJSON(raw) // bigint / numeric stay exact (json.Number)
+	if err != nil {
 		return nil, specErr(fmt.Errorf("decode result: %w", err))
+	}
+	rows, isList := decoded.([]any)
+	if !isList {
+		return nil, specErr(fmt.Errorf("decode result: expected a JSON array of rows, got %T", decoded))
 	}
 	return rows, nil
 }

@@ -2,6 +2,8 @@ package report
 
 import (
 	"bytes"
+	"encoding/base64"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -146,5 +148,60 @@ func TestAddSpecDriftMarksCalledOperationsAndFailsOnThreshold(t *testing.T) {
 	AddSpecDrift(none, drifts(), "breaking")
 	if none.Drift != nil {
 		t.Fatal("must not invent a drift section")
+	}
+}
+
+func TestDriftNoneSaysWhenNothingWasChecked(t *testing.T) {
+	r := &Run{Steps: []Step{{ID: "a", Status: Skipped}}}
+	EnsureDrift(r)
+	var buf bytes.Buffer
+	Print(&buf, r)
+	if !strings.Contains(buf.String(), "no contract call ran") {
+		t.Fatalf("an empty result must not read as a clean one:\n%s", buf.String())
+	}
+}
+
+func TestPrintDoesNotReorderEvidence(t *testing.T) {
+	r := &Run{Steps: []Step{
+		{ID: "w", Contract: &ContractResult{Source: "api", Operation: "GET /w", Mode: "warn", Violations: []Violation{{Where: "response", Message: "first"}}}},
+		{ID: "f", Contract: &ContractResult{Source: "api", Operation: "GET /f", Mode: "fail", Violations: []Violation{{Where: "response", Message: "second"}}}},
+	}}
+	SummarizeDrift(r)
+	before := []string{r.Drift.Findings[0].Step, r.Drift.Findings[1].Step}
+	Print(&bytes.Buffer{}, r)
+	if after := []string{r.Drift.Findings[0].Step, r.Drift.Findings[1].Step}; after[0] != before[0] || after[1] != before[1] {
+		t.Fatalf("printing changed the report's data: %v -> %v", before, after)
+	}
+}
+
+func TestMaskingCoversEncodedForms(t *testing.T) {
+	sec := "p@ss w/rd&<x>"
+	secrets := []string{sec, "short"}
+	forms := []string{
+		sec,
+		url.QueryEscape(sec), // a query value
+		url.PathEscape(sec),  // one escaped path segment
+		(&url.URL{Path: "/x/" + sec}).EscapedPath(), // a whole path, where "/" stays a separator
+		base64.StdEncoding.EncodeToString([]byte(sec)),
+	}
+	text := strings.Join(forms, " | ") + " | short"
+	got := MaskText(text, secrets)
+	for _, f := range append(forms, "short") {
+		if strings.Contains(got, strings.TrimPrefix(f, "/x/")) {
+			t.Errorf("%q survived masking: %s", f, got)
+		}
+	}
+	// JSON, in both escapings of & and <
+	for _, j := range []string{
+		`{"u":"` + url.QueryEscape(sec) + `","raw":"p@ss w/rd&<x>"}`,
+		`{"u":"` + url.QueryEscape(sec) + `","raw":"p@ss w/rd&<x>"}`,
+	} {
+		if m := string(MaskJSON([]byte(j), secrets)); strings.Contains(m, "p@ss") || strings.Contains(m, "p%40ss") {
+			t.Errorf("JSON masking missed a form: %s", m)
+		}
+	}
+	// the base64 of a very short secret is not masked: it would mangle ordinary text
+	if MaskText("c2hvcnQ=", []string{"short"}) != "c2hvcnQ=" {
+		t.Error("short secrets should not have their base64 masked")
 	}
 }

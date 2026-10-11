@@ -1,0 +1,325 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sleuth dashboard</title>
+<style>
+:root {
+  --bg: #f6f7f9; --panel: #ffffff; --ink: #1b2330; --muted: #5d6879; --line: #dde1e8;
+  --accent: #2459d6; --accent-ink: #ffffff;
+  --pass: #17794a; --pass-bg: #e3f4ea; --fail: #b3261e; --fail-bg: #fbe6e4;
+  --skip: #5d6879; --skip-bg: #eceef2; --run: #2459d6; --run-bg: #e4ecfc; --warn: #8a5a00; --warn-bg: #fdf0d3;
+  --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #12161d; --panel: #1a2029; --ink: #e6e9ef; --muted: #98a2b3; --line: #2b3340;
+    --accent: #6b95f2; --accent-ink: #0c1220;
+    --pass: #5cc98f; --pass-bg: #163326; --fail: #f08a82; --fail-bg: #3a1a18;
+    --skip: #98a2b3; --skip-bg: #242b36; --run: #7aa2f7; --run-bg: #1b2a4a; --warn: #e8b84a; --warn-bg: #3a2e12;
+  }
+}
+:root[data-theme="dark"] {
+  --bg: #12161d; --panel: #1a2029; --ink: #e6e9ef; --muted: #98a2b3; --line: #2b3340;
+  --accent: #6b95f2; --accent-ink: #0c1220;
+  --pass: #5cc98f; --pass-bg: #163326; --fail: #f08a82; --fail-bg: #3a1a18;
+  --skip: #98a2b3; --skip-bg: #242b36; --run: #7aa2f7; --run-bg: #1b2a4a; --warn: #e8b84a; --warn-bg: #3a2e12;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: var(--bg); color: var(--ink); font: 14px/1.45 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+header { display: flex; align-items: center; gap: 12px; padding: 12px 20px; border-bottom: 1px solid var(--line); background: var(--panel); }
+header h1 { font-size: 16px; margin: 0; letter-spacing: .2px; }
+header .sub { color: var(--muted); }
+header .spacer { flex: 1; }
+.layout { display: grid; grid-template-columns: 280px 1fr; min-height: calc(100vh - 49px); }
+nav { border-right: 1px solid var(--line); background: var(--panel); padding: 12px; }
+nav h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .6px; color: var(--muted); margin: 4px 8px 8px; }
+.flow-item { display: block; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: 8px; padding: 8px 10px; color: inherit; font: inherit; cursor: pointer; }
+.flow-item:hover { background: var(--bg); }
+.flow-item[aria-current="true"] { background: var(--run-bg); border-color: var(--accent); }
+.flow-item .n { font-weight: 600; }
+.flow-item .d { color: var(--muted); font-size: 12px; margin-top: 2px; }
+.flow-item .bad { color: var(--fail); font-size: 12px; margin-top: 2px; }
+main { padding: 20px; min-width: 0; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 16px; margin-bottom: 16px; }
+.card h3 { margin: 0 0 10px; font-size: 14px; }
+.title { display: flex; flex-wrap: wrap; align-items: baseline; gap: 10px; }
+.title h2 { margin: 0; font-size: 20px; }
+.muted { color: var(--muted); }
+.controls { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; margin-top: 12px; }
+label.field { display: flex; align-items: center; gap: 6px; color: var(--muted); }
+input[type=number] { width: 64px; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; background: var(--bg); color: var(--ink); font: inherit; }
+button.primary { background: var(--accent); color: var(--accent-ink); border: 0; border-radius: 8px; padding: 8px 16px; font: inherit; font-weight: 600; cursor: pointer; }
+button.primary:disabled { opacity: .55; cursor: not-allowed; }
+button:focus-visible, input:focus-visible, .row:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.hint { font-size: 12px; color: var(--muted); }
+.pill { display: inline-flex; align-items: center; gap: 5px; padding: 2px 9px; border-radius: 999px; font-size: 12px; font-weight: 600; white-space: nowrap; }
+.pill.passed { background: var(--pass-bg); color: var(--pass); }
+.pill.failed { background: var(--fail-bg); color: var(--fail); }
+.pill.skipped, .pill.pending { background: var(--skip-bg); color: var(--skip); }
+.pill.running { background: var(--run-bg); color: var(--run); }
+.pill.warn { background: var(--warn-bg); color: var(--warn); }
+.stats { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
+.stat b { display: block; font-size: 18px; }
+.stat span { color: var(--muted); font-size: 12px; }
+.axis { display: grid; grid-template-columns: 210px 1fr; color: var(--muted); font-size: 11px; margin-bottom: 4px; }
+.axis .scale { display: flex; justify-content: space-between; }
+.row { display: grid; grid-template-columns: 210px 1fr; align-items: center; gap: 0; width: 100%; background: none; border: 0; border-top: 1px solid var(--line); padding: 6px 4px; font: inherit; color: inherit; text-align: left; cursor: pointer; }
+.row:hover, .row[aria-pressed="true"] { background: var(--bg); }
+.row .label { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.row .pill { min-width: 86px; justify-content: center; }
+.row .label .id { font-family: var(--mono); font-size: 13px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.row .label .k { color: var(--muted); font-size: 11px; }
+.track { position: relative; height: 22px; background: repeating-linear-gradient(90deg, transparent 0 24.9%, var(--line) 24.9% 25%); border-radius: 4px; }
+.bar { position: absolute; top: 3px; height: 16px; min-width: 3px; border-radius: 4px; }
+.bar.passed { background: var(--pass); } .bar.failed { background: var(--fail); } .bar.skipped { background: var(--skip); opacity: .5; }
+.bar.running { background: var(--run); animation: pulse 1.1s ease-in-out infinite; }
+@keyframes pulse { 50% { opacity: .55; } }
+@media (prefers-reduced-motion: reduce) { .bar.running { animation: none; } }
+.bar-note { position: absolute; top: 2px; font-size: 11px; color: var(--muted); white-space: nowrap; padding-left: 4px; }
+.bar-note.before { padding: 0 4px 0 0; text-align: right; transform: translateX(-100%); }
+.bar-note.inside { color: var(--bg); font-weight: 600; padding: 0 6px 0 0; text-align: right; }
+.needs { color: var(--muted); font-size: 11px; font-family: var(--mono); }
+.detail h4 { margin: 14px 0 6px; font-size: 12px; font-weight: 600; color: var(--muted); }
+pre { margin: 0; padding: 10px; background: var(--bg); border: 1px solid var(--line); border-radius: 6px; overflow: auto; max-height: 280px; font: 12px/1.45 var(--mono); }
+.err { background: var(--fail-bg); color: var(--fail); border-radius: 6px; padding: 8px 10px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { text-align: left; padding: 5px 8px; border-top: 1px solid var(--line); vertical-align: top; }
+th { color: var(--muted); font-weight: 600; font-size: 12px; }
+ul.plain { margin: 0; padding-left: 18px; }
+.empty { color: var(--muted); padding: 40px 0; text-align: center; }
+.waves { display: grid; gap: 4px; font-family: var(--mono); font-size: 12px; margin-top: 8px; }
+.waves div { display: flex; gap: 8px; }
+.waves b { color: var(--muted); font-weight: 600; width: 60px; }
+@media (max-width: 760px) {
+  .layout { grid-template-columns: 1fr; }
+  nav { border-right: 0; border-bottom: 1px solid var(--line); }
+  .axis { grid-template-columns: 0 1fr; }
+  .row { grid-template-columns: 1fr; gap: 6px; }
+}
+</style>
+</head>
+<body>
+<header>
+  <h1>Sleuth</h1><span class="sub">flow dashboard</span><span class="spacer"></span>
+  <span class="hint" id="conn"></span>
+</header>
+<div class="layout">
+  <nav><h2>Flows</h2><div id="flows"></div></nav>
+  <main id="main"><div class="empty">Select a flow.</div></main>
+</div>
+
+<script>
+"use strict";
+const token = new URLSearchParams(location.hash.slice(1)).get("token") || "";
+history.replaceState(null, "", location.pathname); // keep the token out of the address bar and history
+
+const STATUS = { passed: ["✔", "passed"], failed: ["✘", "failed"], skipped: ["–", "skipped"], running: ["●", "running"], pending: ["○", "pending"] };
+
+function h(tag, props, ...kids) {
+  const e = document.createElement(tag);
+  for (const [k, v] of Object.entries(props || {})) {
+    if (k === "class") e.className = v;
+    else if (k.startsWith("on")) e.addEventListener(k.slice(2), v);
+    else if (v !== false && v != null) e.setAttribute(k, v === true ? "" : v);
+  }
+  for (const kid of kids.flat()) if (kid != null && kid !== false) e.append(kid.nodeType ? kid : document.createTextNode(String(kid)));
+  return e;
+}
+const pill = (status, text) => { const [i, c] = STATUS[status] || ["", status]; return h("span", { class: "pill " + c }, i, " ", text || status); };
+const ms = n => n >= 1000 ? (n / 1000).toFixed(n >= 10000 ? 0 : 1) + " s" : Math.round(n) + " ms";
+const pretty = (v, max = 3000) => { let s = typeof v === "string" ? v : JSON.stringify(v, null, 2); return s && s.length > max ? s.slice(0, max) + "\n… (" + (s.length - max) + " more characters)" : s; };
+
+const state = { flows: [], sel: null, run: null, detail: null, timer: null };
+
+async function api(path, opt = {}) {
+  const r = await fetch(path, { ...opt, headers: { "X-Sleuth-Token": token, "Content-Type": "application/json" } });
+  const body = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(body.error || r.statusText);
+  return body;
+}
+
+async function loadFlows() {
+  if (!token) { document.getElementById("main").replaceChildren(h("div", { class: "empty" }, "Open the full link printed by `sleuth serve` (it includes the access token).")); return; }
+  try { state.flows = await api("/api/flows"); document.getElementById("conn").textContent = "connected"; }
+  catch (e) { document.getElementById("conn").textContent = "error: " + e.message; return; }
+  renderFlows();
+  if (state.flows.length === 1) select(state.flows[0].file);
+}
+
+function renderFlows() {
+  const box = document.getElementById("flows");
+  box.replaceChildren(...(state.flows.length ? state.flows.map(f => h("button", {
+    class: "flow-item", "aria-current": String(state.sel === f.file), onclick: () => select(f.file),
+  }, h("div", { class: "n" }, f.name || f.file),
+     f.error ? h("div", { class: "bad" }, "invalid: " + f.error.split("\n")[0]) : h("div", { class: "d" }, f.description || (f.nodes.length + " nodes")),
+     f.env_error ? h("div", { class: "bad" }, "needs setup: " + f.env_error.split("\n")[0]) : null)) : [h("div", { class: "hint" }, "No flows found in the served directory.")]));
+}
+
+function select(file) {
+  if (state.run && state.run.running) return;
+  state.sel = file; state.run = null; state.detail = null;
+  renderFlows(); renderMain();
+}
+
+function currentFlow() { return state.flows.find(f => f.file === state.sel); }
+
+async function start() {
+  const f = currentFlow(); if (!f || (state.run && state.run.running)) return;
+  const parallel = Math.max(1, parseInt(document.getElementById("par").value, 10) || 1);
+  state.run = { running: true, nodes: f.nodes, st: {}, parallel, error: null, report: null, localStart: Date.now() };
+  state.detail = null; renderMain();
+  let id;
+  try { id = (await api("/api/run", { method: "POST", body: JSON.stringify({ flow: f.file, parallel }) })).id; }
+  catch (e) { state.run.running = false; state.run.error = e.message; renderMain(); return; }
+  const es = new EventSource("/api/runs/" + id + "/events?token=" + encodeURIComponent(token));
+  es.onmessage = m => { handle(JSON.parse(m.data)); if (!state.run.running) es.close(); };
+  es.onerror = () => { if (state.run && state.run.running) { state.run.error = "lost connection to the dashboard"; state.run.running = false; renderMain(); } es.close(); };
+  clearInterval(state.timer);
+  state.timer = setInterval(() => { if (state.run && state.run.running) renderTimeline(); else clearInterval(state.timer); }, 120);
+}
+
+function handle(e) {
+  const r = state.run;
+  switch (e.type) {
+    case "run_start": r.nodes = e.nodes; r.localStart = Date.now() - e.t; break;
+    case "step_start": r.st[e.id] = { status: "running", start: e.t }; break;
+    case "step_done": {
+      const prev = r.st[e.id];
+      r.st[e.id] = { status: e.step.status, start: prev ? prev.start : e.t, dur: e.step.duration_ms, step: e.step };
+      break;
+    }
+    case "run_done": r.report = e.run; r.evidence = e.evidence; r.running = false; break;
+    case "run_error": r.error = e.error; r.running = false; break;
+  }
+  renderMain();
+}
+
+function renderMain() {
+  const main = document.getElementById("main");
+  const f = currentFlow();
+  if (!f) { main.replaceChildren(h("div", { class: "empty" }, "Select a flow.")); return; }
+  const r = state.run;
+  const parVal = (document.getElementById("par") || {}).value || (r && r.parallel) || 1;
+  const parts = [];
+  parts.push(h("div", { class: "card" },
+    h("div", { class: "title" }, h("h2", {}, f.name || f.file), h("span", { class: "muted" }, f.file)),
+    f.description ? h("div", { class: "muted" }, f.description) : null,
+    f.error ? null : h("div", { class: "hint", style: "margin-top:6px" }, "Environment: ", h("b", {}, f.env),
+      f.env_paired ? " (paired with this flow)" : (f.env === "none" ? " (no env file: pass -env, or add " + f.file.replace(/(\.flow)?\.ya?ml$/, "") + ".env.yaml)" : " (server default; add " + f.file.replace(/(\.flow)?\.ya?ml$/, "") + ".env.yaml to pair one)")),
+    f.env_error ? h("div", { class: "err", style: "margin-top:10px" }, "Cannot run: " + f.env_error) : null,
+    f.error ? h("div", { class: "err" }, f.error) : h("div", { class: "controls" },
+      h("label", { class: "field" }, "Parallel", h("input", { id: "par", type: "number", min: "1", max: "64", value: parVal, disabled: !!(r && r.running) })),
+      h("button", { class: "primary", onclick: start, disabled: !!(r && r.running) || !!f.env_error }, r && r.running ? "Running…" : (r && (r.report || r.error) ? "Run again" : "Run flow")),
+      h("span", { class: "hint" }, "At 1, nodes run in flow order. Higher values run independent nodes together; only needs: and nodes.<id> references order them.")),
+    r && r.error ? h("div", { class: "err", style: "margin-top:12px" }, r.error) : null,
+    r && (r.report || r.running) ? summary(r) : null));
+  if (!f.error) {
+    parts.push(h("div", { class: "card" }, h("h3", {}, "Timeline"), h("div", { id: "timeline" })));
+    parts.push(h("div", { id: "detail" }));
+    if (r && r.report && r.report.drift) parts.push(driftCard(r.report.drift));
+    if (!r) parts.push(planCard(f));
+  }
+  main.replaceChildren(...parts);
+  if (!f.error) { renderTimeline(); renderDetail(); }
+}
+
+function summary(r) {
+  const steps = Object.values(r.st);
+  const count = s => steps.filter(x => x.status === s).length;
+  const rep = r.report;
+  const status = rep ? rep.status : "running";
+  return h("div", { class: "stats" },
+    h("div", { class: "stat" }, pill(status)),
+    h("div", { class: "stat" }, h("b", {}, rep ? ms(rep.duration_ms) : ms(Date.now() - r.localStart)), h("span", {}, "duration")),
+    h("div", { class: "stat" }, h("b", {}, count("passed")), h("span", {}, "passed")),
+    h("div", { class: "stat" }, h("b", {}, count("failed")), h("span", {}, "failed")),
+    h("div", { class: "stat" }, h("b", {}, count("skipped")), h("span", {}, "skipped")),
+    h("div", { class: "stat" }, h("b", {}, r.parallel), h("span", {}, "parallel")),
+    r.evidence ? h("div", { class: "stat" }, h("b", { style: "font-size:12px;font-family:var(--mono)" }, r.evidence), h("span", {}, "evidence file (secrets masked)")) : null);
+}
+
+function planCard(f) {
+  return h("div", { class: "card" }, h("h3", {}, "Plan"),
+    h("div", { class: "hint" }, "Nodes in the same wave are independent, so they can overlap when Parallel is above 1."),
+    h("div", { class: "waves" }, (f.waves || []).map((w, i) => h("div", {}, h("b", {}, "wave " + (i + 1)), w.join(", ")))));
+}
+
+function renderTimeline() {
+  const box = document.getElementById("timeline"); if (!box) return;
+  const f = currentFlow(); const r = state.run;
+  const nodes = r ? r.nodes : f.nodes;
+  const now = r && r.running ? Date.now() - r.localStart : 0;
+  let total = 500;
+  if (r) for (const n of nodes) { const s = r.st[n.id]; if (s) total = Math.max(total, s.start + (s.status === "running" ? now - s.start : (s.dur || 0))); }
+  const axis = h("div", { class: "axis" }, h("div"), h("div", { class: "scale" }, h("span", {}, "0"), h("span", {}, ms(total / 2)), h("span", {}, ms(total))));
+  const rows = nodes.map(n => {
+    const s = r && r.st[n.id];
+    const status = s ? s.status : "pending";
+    const dur = s ? (status === "running" ? Math.max(0, now - s.start) : (s.dur || 0)) : 0;
+    const left = s ? (s.start / total) * 100 : 0;
+    const width = Math.max((dur / total) * 100, 0.6);
+    const sel = state.detail === n.id;
+    return h("button", { class: "row", "aria-pressed": String(sel), onclick: () => { state.detail = sel ? null : n.id; renderTimeline(); renderDetail(); } },
+      h("div", { class: "label" }, pill(status, ""), h("div", { style: "min-width:0" },
+        h("div", { class: "id" }, n.id), h("div", { class: "k" }, n.kind, (n.needs && n.needs.length) ? h("span", { class: "needs" }, " ← " + n.needs.join(", ")) : null))),
+      h("div", { class: "track" }, s && status !== "skipped" ? h("div", { class: "bar " + status, style: `left:${left}%;width:${width}%` }) : null,
+        s ? (left + width > 82 && status !== "skipped"
+          ? (width >= 12
+            ? h("span", { class: "bar-note inside", style: `left:${left}%;width:${width}%` }, ms(dur))
+            : h("span", { class: "bar-note before", style: `left:${left}%` }, ms(dur)))
+          : h("span", { class: "bar-note", style: `left:${left + width}%` }, status === "skipped" ? "skipped" : ms(dur))) : null));
+  });
+  box.replaceChildren(axis, ...rows);
+}
+
+function kv(label, v) { return v == null || v === "" ? null : [h("h4", {}, label), v]; }
+
+function renderDetail() {
+  const box = document.getElementById("detail"); if (!box) return;
+  const r = state.run; const id = state.detail;
+  if (!id || !r || !r.st[id] || !r.st[id].step) { box.replaceChildren(); return; }
+  const s = r.st[id].step;
+  const parts = [h("div", { class: "title" }, h("h3", { style: "margin:0" }, s.id), pill(s.status), h("span", { class: "muted" }, s.kind + " · " + ms(s.duration_ms)))];
+  if (s.error) parts.push(h("div", { class: "err", style: "margin-top:10px" }, (s.error_kind ? "[" + s.error_kind + "] " : "") + s.error));
+  if (s.request) parts.push(kv("Request", h("pre", {}, s.request.method + " " + s.request.url + (s.request.headers ? "\n" + pretty(s.request.headers) : "") + (s.request.body != null ? "\n\n" + pretty(s.request.body) : ""))));
+  if (s.response) parts.push(kv("Response " + s.response.status + " (" + ms(s.response.duration_ms) + ")", h("pre", {}, pretty(s.response.body != null ? s.response.body : ""))));
+  if (s.checks && s.checks.length) parts.push(kv("Checks", h("table", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "path"), h("th", {}, "check"), h("th", {}, "expected"), h("th", {}, "actual")),
+    s.checks.map(c => h("tr", {}, h("td", {}, pill(c.passed ? "passed" : "failed", "")), h("td", { class: "needs" }, c.path), h("td", {}, c.op + (c.message ? " — " + c.message : "")), h("td", { class: "needs" }, c.expected == null ? "" : pretty(c.expected, 200)), h("td", { class: "needs" }, c.actual == null ? "" : pretty(c.actual, 200)))))));
+  if (s.contract) {
+    const c = s.contract;
+    parts.push(kv("Contract " + c.source + (c.operation ? " · " + c.operation : "") + " · mode: " + c.mode,
+      h("div", {}, (c.violations || []).length ? h("ul", { class: "plain" }, c.violations.map(v => h("li", {}, h("b", {}, "[" + v.where + "] "), v.path || "", " ", v.message))) : h("span", { class: "muted" }, "no violations"),
+        (c.notes || []).length ? h("ul", { class: "plain muted" }, c.notes.map(n => h("li", {}, n))) : null)));
+  }
+  if (s.poll) parts.push(kv("Poll — " + s.poll.attempts + " attempt(s), " + (s.poll.satisfied ? "satisfied" : "not satisfied"),
+    h("table", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "at"), h("th", {}, "status"), h("th", {}, "passed"), h("th", {}, "next wait"), h("th", {}, "error")),
+      s.poll.history.map(a => h("tr", {}, h("td", {}, a.n), h("td", {}, ms(a.elapsed_ms)), h("td", {}, a.status || (a.row_count != null ? a.row_count + " rows" : "")), h("td", {}, a.passed ? "yes" : "no"), h("td", {}, a.delay_ms ? ms(a.delay_ms) : ""), h("td", {}, a.error || ""))))));
+  if (s.db) parts.push(kv("Database " + s.db.connection + " (" + s.db.type + ") — " + s.db.row_count + " row(s)", h("pre", {}, s.db.query + (s.db.args ? "\n\nargs: " + pretty(s.db.args) : "") + (s.db.rows ? "\n\n" + pretty(s.db.rows) : ""))));
+  if (s.output) parts.push(kv("Output", h("pre", {}, pretty(s.output))));
+  box.replaceChildren(h("div", { class: "card detail" }, parts.flat()));
+}
+
+function driftCard(d) {
+  const parts = [h("h3", {}, "Contract drift")];
+  if (!d.findings.length) parts.push(h("div", { class: "muted" }, "none"));
+  else parts.push(h("div", {}, pill(d.failing ? "failed" : "passed", d.failing + " failing"), " ", h("span", { class: "pill warn" }, d.accepted + " accepted"),
+    h("table", {}, h("tr", {}, h("th", {}, "mode"), h("th", {}, "operation"), h("th", {}, "where"), h("th", {}, "detail"), h("th", {}, "step")),
+      d.findings.map(f => h("tr", {}, h("td", {}, f.mode), h("td", { class: "needs" }, f.source + " " + (f.operation || "")), h("td", {}, f.where), h("td", {}, (f.path || "") + " " + f.message), h("td", { class: "needs" }, f.step))))));
+  for (const sc of d.sources || []) {
+    const pct = sc.total ? Math.round(sc.exercised * 100 / sc.total) : 100;
+    parts.push(h("h4", { style: "margin:16px 0 6px" }, "Registry coverage · " + sc.source + " · " + sc.exercised + " of " + sc.total + " operations exercised (" + pct + "%)"));
+    parts.push(sc.untested && sc.untested.length ? h("ul", { class: "plain needs" }, sc.untested.map(o => h("li", {}, "not called: " + o))) : h("div", { class: "muted" }, "every published operation was called"));
+  }
+  if (d.coverage_gaps && d.coverage_gaps.length) {
+    parts.push(h("h4", { style: "margin:16px 0 6px" }, "Calls the contract could not fully validate"));
+    parts.push(h("ul", { class: "plain" }, d.coverage_gaps.map(g => h("li", {}, g.operation + ": " + g.note + " (step " + g.step + ")"))));
+  }
+  return h("div", { class: "card" }, parts);
+}
+
+loadFlows();
+</script>
+</body>
+</html>

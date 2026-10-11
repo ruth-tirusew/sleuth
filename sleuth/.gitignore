@@ -1,0 +1,20 @@
+# Build output and run results
+/sleuth
+/evidence/
+
+# Service-specific flows, env files and scripts used for local testing against real
+# services. They carry local hosts, ports, table/collection names and token helpers,
+# so they stay on the machine. Generic examples live in examples/ without these names.
+/examples/decision*
+/examples/recon*
+/examples/credit*
+/examples/mongo.env.yaml
+/examples/selftest/
+/scripts/selftest-*.sh
+/scripts/mint-*.sh
+/docs/findings/
+
+# Local environment files and secrets
+*.local
+.env
+.env.*

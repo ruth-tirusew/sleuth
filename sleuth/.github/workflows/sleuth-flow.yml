@@ -1,0 +1,49 @@
+name: sleuth-flow
+
+# Phase 1: manual trigger only, no gating (proves the runner works headless).
+on:
+  workflow_dispatch:
+    inputs:
+      flow:
+        description: Flow spec path
+        default: examples/login-and-profile.flow.yaml
+      env_file:
+        description: Environment config path
+        default: examples/local.env.yaml
+
+permissions:
+  contents: read
+
+jobs:
+  run-flow:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+
+      - name: Unit + e2e tests
+        run: go test ./...
+
+      - name: Build
+        run: go build -o sleuth ./cmd/sleuth
+
+      - name: Validate flow
+        run: ./sleuth validate "${{ inputs.flow }}"
+
+      - name: Run flow
+        env:
+          # Every secret named in the env file's `secrets:` list must be set here.
+          APP_PASSWORD: ${{ secrets.APP_PASSWORD }}
+        run: ./sleuth run -env "${{ inputs.env_file }}" -out evidence/run.json "${{ inputs.flow }}"
+
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sleuth-evidence
+          path: evidence/
+          if-no-files-found: warn
+          retention-days: 30

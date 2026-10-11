@@ -1,0 +1,8 @@
+version: 1
+name: db-pg-write
+description: A write smuggled behind a SELECT must never run.
+nodes:
+  - id: w
+    kind: db
+    db: {connection: pg, query: "SELECT 1; CREATE TABLE sleuth_e2e_must_not_exist(x int)"}
+    assert: [{path: nodes.w.row_count, equals: 1}]

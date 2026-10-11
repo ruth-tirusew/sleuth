@@ -1,0 +1,14 @@
+version: 1
+name: parallel
+nodes:
+  - {id: s1, kind: request, request: {url: "{{ .env.base_url }}/slow?ms=300"}}
+  - {id: s2, kind: request, request: {url: "{{ .env.base_url }}/slow?ms=300"}}
+  - {id: s3, kind: request, request: {url: "{{ .env.base_url }}/slow?ms=300"}}
+  - {id: s4, kind: request, request: {url: "{{ .env.base_url }}/slow?ms=300"}}
+  - id: all
+    kind: assertion
+    assert:
+      - {path: nodes.s1.response.status, equals: 200}
+      - {path: nodes.s2.response.status, equals: 200}
+      - {path: nodes.s3.response.status, equals: 200}
+      - {path: nodes.s4.response.status, equals: 200}

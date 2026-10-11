@@ -1,0 +1,4 @@
+version: 1
+name: spec-error
+nodes:
+  - {id: broken, kind: request, request: {url: "{{ .env.no_such_var }}/health"}}

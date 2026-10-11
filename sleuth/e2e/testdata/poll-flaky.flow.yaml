@@ -1,0 +1,12 @@
+version: 1
+name: poll-flaky
+description: The service drops the connection on its first two calls; a poll rides through that.
+nodes:
+  - id: wait
+    kind: poll
+    poll:
+      interval: 50ms
+      timeout: 5s
+      request: {url: "{{ .env.base_url }}/flaky/k1"}
+      until:
+        - {path: nodes.wait.response.body.ok, equals: true}

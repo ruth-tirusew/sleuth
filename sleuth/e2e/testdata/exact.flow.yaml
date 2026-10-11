@@ -1,0 +1,18 @@
+version: 1
+name: exact
+description: An id beyond 2^53 and a decimal survive assertions and a round trip unchanged.
+nodes:
+  - {id: big, kind: request, request: {url: "{{ .env.base_url }}/big", extract: {id: body.id}}}
+  - id: exact
+    kind: assertion
+    assert:
+      - {path: nodes.big.response.body.id, equals: 9007199254740993}
+      - {path: nodes.big.response.body.price, equals: 10.50}
+  - id: echo
+    kind: request
+    request: {method: POST, url: "{{ .env.base_url }}/echo", body: {id: "{{ .nodes.big.out.id }}"}}
+  - id: echoed
+    kind: assertion
+    assert:
+      - {path: nodes.echo.response.body.id, equals: 9007199254740993}
+      - {path: nodes.echo.response.raw, matches: '"id":9007199254740993'}

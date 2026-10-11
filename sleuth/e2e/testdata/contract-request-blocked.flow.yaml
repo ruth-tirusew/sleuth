@@ -1,0 +1,8 @@
+version: 1
+name: contract-request-blocked
+description: The request body breaks the contract (no password), so it is never sent.
+nodes:
+  - id: login
+    kind: request
+    contract: api
+    request: {method: POST, url: "{{ .env.base_url }}/login", body: {username: alice}}

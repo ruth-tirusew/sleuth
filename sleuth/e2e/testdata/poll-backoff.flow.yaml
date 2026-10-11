@@ -1,0 +1,15 @@
+version: 1
+name: poll-backoff
+nodes:
+  - id: start
+    kind: request
+    request: {method: POST, url: "{{ .env.base_url }}/jobs", query: {ready_after: "5"}, extract: {id: body.id}}
+  - id: wait
+    kind: poll
+    poll:
+      interval: 40ms
+      timeout: 10s
+      backoff: {factor: 2, max: 200ms}
+      request: {url: "{{ .env.base_url }}/jobs/{{ .nodes.start.out.id }}"}
+      until:
+        - {path: nodes.wait.response.body.status, equals: DONE}

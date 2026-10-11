@@ -235,9 +235,34 @@ When a run has several kinds of failure, 2 wins over 1, and 1 over 3.
 
 ## Development
 
-    go build ./...
-    go vet ./...
-    go test ./...
+    make test        # go vet, then go test -race ./... (unit and end-to-end)
+    make e2e         # only the end-to-end suite
+    make e2e-race    # the same, with the program under test built with the race detector
+    make check       # test + e2e-race: what to run before committing
+
+### End-to-end tests
+
+`go test ./e2e` builds the real `sleuth` binary and runs it against a service started inside the test (`internal/mockservice`,
+the same service as `go run ./examples/mock`), so nothing outside this repository is needed. It checks what a user
+sees: exit codes, the printed report and the evidence file. About 21 flows each run at `--parallel 1` and `--parallel 4`,
+covering every exit code (0, 1, 2, 3) and every node kind except database nodes (see below):
+secret masking, assertion / spec / infrastructure / timeout / contract failures and what wins when they mix, polling
+(converging, never converging, backoff, riding through dropped connections), exact numbers beyond 2^53, contract
+checks (a violating request is never sent, accepted drift in warn mode, an operation missing from the contract),
+coverage, spec drift against a saved baseline (report-only and `-spec-drift-fail`, including when no contract call
+ran), parallel overlap, and the `validate`, `scaffold`, `diff` and `snapshot` commands. It takes about 6 seconds.
+
+The mock service publishes its contract at `/openapi.json` and a later, breaking version at `/openapi.v2.json`, and has
+endpoints that match their contract, endpoints that deliberately do not, and ones that hang or drop connections.
+The test source files are inputs to Go's test cache, so a change to the program always re-runs the suite instead of
+reusing a stale pass.
+
+`make e2e-race` builds the program with the race detector (about 40 seconds): a data race makes the program exit 66,
+which fails the scenario. This is the check that found a race between parallel contract nodes sharing one schema compiler.
+
+The database nodes need a real Postgres: set `SLEUTH_TEST_PG_DSN` to a **scratch** database and `go test ./e2e` also
+runs the database scenarios (a passing query, SQL the database rejects, a write smuggled behind a `SELECT` that must
+never run, an unreachable database). The unit tests below cover Mongo.
 
 Some tests run against real servers and are skipped unless pointed at one. Use a scratch database; the tests create
 and drop their own data:
@@ -248,14 +273,16 @@ and drop their own data:
 
 Layout:
 
-    cmd/sleuth/        CLI (run, validate, scaffold) and exit codes
+    cmd/sleuth/         CLI (run, validate, scaffold, serve, diff, snapshot) and exit codes
     internal/flow/      flow spec types, validation, DAG ordering
     internal/runner/    execution: request, assertion, transform, poll, db nodes; context and env
     internal/registry/  OpenAPI loading, operation matching, schema validation, scaffolding
     internal/report/    evidence model, drift summary, CLI report
     internal/serve/     the local dashboard (server and embedded page)
     schema/             JSON Schema for flow files
-    examples/           a sample flow, env file and mock service
+    internal/mockservice/  the test service (also run by examples/mock)
+    e2e/                end-to-end tests: the real binary against the mock service
+    examples/           a sample flow, env file and mock service launcher
     docs/decisions/     design decisions
     .github/workflows/  a manually triggered workflow that runs a flow headless
 

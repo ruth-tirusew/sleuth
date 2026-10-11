@@ -1,0 +1,8 @@
+version: 1
+name: contract-unknown-op
+description: /teapot exists on the service but not in its contract.
+nodes:
+  - id: teapot
+    kind: request
+    contract: api
+    request: {url: "{{ .env.base_url }}/teapot"}

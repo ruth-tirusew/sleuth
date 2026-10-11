@@ -25,13 +25,9 @@ type Issue struct {
 // Validate checks value against the schema stored at ptr in the OpenAPI document
 // (e.g. Operation.RequestPtr), using a full JSON Schema 2020-12 implementation.
 func (s *Spec) Validate(ptr string, value any) ([]Issue, error) {
-	sch, ok := s.compiled[ptr]
-	if !ok {
-		var err error
-		if sch, err = s.comp.Compile(specURL + ptr); err != nil {
-			return nil, fmt.Errorf("compile schema %s: %w", ptr, err)
-		}
-		s.compiled[ptr] = sch
+	sch, err := s.schema(ptr)
+	if err != nil {
+		return nil, err
 	}
 	b, err := json.Marshal(value) // normalise Go/YAML types to JSON types
 	if err != nil {
@@ -52,6 +48,22 @@ func (s *Spec) Validate(ptr string, value any) ([]Issue, error) {
 	var out []Issue
 	collect(ve, &out)
 	return out, nil
+}
+
+// schema returns the compiled schema at ptr, compiling it on first use. It is safe to call
+// from several goroutines.
+func (s *Spec) schema(ptr string) (*jsonschema.Schema, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sch, ok := s.compiled[ptr]; ok {
+		return sch, nil
+	}
+	sch, err := s.comp.Compile(specURL + ptr)
+	if err != nil {
+		return nil, fmt.Errorf("compile schema %s: %w", ptr, err)
+	}
+	s.compiled[ptr] = sch
+	return sch, nil
 }
 
 // collect flattens the error tree to its leaves. anyOf/oneOf failures are reported

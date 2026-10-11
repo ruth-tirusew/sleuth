@@ -1,0 +1,5 @@
+version: 1
+name: cycle
+nodes:
+  - {id: a, kind: transform, needs: [b], transform: {set: {x: 1}}}
+  - {id: b, kind: transform, needs: [a], transform: {set: {x: 1}}}

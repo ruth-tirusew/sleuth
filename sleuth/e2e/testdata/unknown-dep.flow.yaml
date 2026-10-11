@@ -1,0 +1,4 @@
+version: 1
+name: unknown-dep
+nodes:
+  - {id: a, kind: transform, transform: {set: {x: "{{ .nodes.ghost.out.y }}"}}}

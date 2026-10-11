@@ -1,0 +1,19 @@
+version: 1
+name: poll-ok
+nodes:
+  - id: start
+    kind: request
+    request: {method: POST, url: "{{ .env.base_url }}/jobs", query: {ready_after: "3"}, extract: {id: body.id}}
+  - id: wait
+    kind: poll
+    poll:
+      interval: 50ms
+      timeout: 5s
+      request:
+        url: "{{ .env.base_url }}/jobs/{{ .nodes.start.out.id }}"
+        extract: {result: body.result}
+      until:
+        - {path: nodes.wait.response.body.status, equals: DONE}
+  - id: done
+    kind: assertion
+    assert: [{path: nodes.wait.out.result, equals: ok}]

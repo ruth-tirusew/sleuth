@@ -1,0 +1,11 @@
+version: 1
+name: contract-warn
+description: A 404 the contract does not list, recorded as accepted drift instead of failing.
+nodes:
+  - id: missing
+    kind: request
+    contract: {source: api, on_violation: warn}
+    request: {url: "{{ .env.base_url }}/items/0"}
+  - id: got_404
+    kind: assertion
+    assert: [{path: nodes.missing.response.status, equals: 404}]

@@ -12,6 +12,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/santhosh-tekuri/jsonschema/v6"
@@ -20,7 +21,10 @@ import (
 type Spec struct {
 	Source string
 	doc    map[string]any
-	// compiled JSON Schemas, by pointer into the document ("#/paths/...").
+	// compiled JSON Schemas, by pointer into the document ("#/paths/..."). Parallel nodes
+	// validate at once, but the compiler and this cache are not safe for concurrent use, so
+	// mu guards compiling. A compiled schema is immutable and is validated against outside the lock.
+	mu       sync.Mutex
 	comp     *jsonschema.Compiler
 	compiled map[string]*jsonschema.Schema
 }

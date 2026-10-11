@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 )
 
@@ -172,4 +173,30 @@ func TestNonJSONContentIsRecorded(t *testing.T) {
 	if len(op.RequestOther) != 1 || op.RequestOther[0] != "application/xml" || op.ResponseOther["200"][0] != "text/plain" || op.ResponseOther["204"] != nil {
 		t.Fatalf("%+v", op)
 	}
+}
+
+// Parallel runs validate from several nodes at once; the compiler and the cache of compiled
+// schemas are shared, so this must be safe (run with -race).
+func TestValidateIsSafeFromManyGoroutines(t *testing.T) {
+	s := load(t)
+	user, _ := s.Find("GET", "/users/1")
+	post, _ := s.Find("POST", "/users")
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			var ptr string
+			var val any
+			if i%2 == 0 {
+				ptr, val = user.ResponsePtrFor(200), map[string]any{"id": 1, "name": "a"}
+			} else {
+				ptr, val = post.RequestPtr, map[string]any{"name": "a"}
+			}
+			if issues, err := s.Validate(ptr, val); err != nil || len(issues) != 0 {
+				t.Errorf("goroutine %d: %v %v", i, issues, err)
+			}
+		}(i)
+	}
+	wg.Wait()
 }

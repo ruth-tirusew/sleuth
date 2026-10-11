@@ -1,0 +1,10 @@
+# The live contract has moved on (v2, breaking changes) while the flows were written against
+# the saved baseline (v1).
+vars:
+  base_url: ${BASE_URL}
+  username: alice
+secrets: [APP_PASSWORD]
+contracts:
+  api: ${BASE_URL}/openapi.v2.json
+baselines:
+  api: baseline.v1.json

@@ -1,0 +1,11 @@
+version: 1
+name: contract-health
+nodes:
+  - id: health
+    kind: request
+    contract: api
+    request: {url: "{{ .env.base_url }}/health"}
+  - id: big
+    kind: request
+    contract: api
+    request: {url: "{{ .env.base_url }}/big"}

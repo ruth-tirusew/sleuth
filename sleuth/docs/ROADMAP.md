@@ -77,19 +77,26 @@ changed files finds nothing at the same severity.
 
 ## Milestone 2 — A self-contained end-to-end suite
 
-The live end-to-end battery went away with the service-specific files, so today nothing exercises a whole run
-against a running service. Replace it with one that needs nothing outside the repo.
+**Status: done 2026-10-11.** `go test ./e2e` (or `make e2e`) builds the real binary and runs it against
+`internal/mockservice`, started in-process: no outside services, about 6 seconds (about 40 with `make e2e-race`).
+It covers every exit code and every node kind (database nodes only when `SLEUTH_TEST_PG_DSN` points at a scratch
+database), at `--parallel 1` and `--parallel 4`; see the README for the list.
 
-- Grow `examples/mock` into a test service with: a health check, an authenticated endpoint, a hanging endpoint, a
-  job that completes after N polls, a served `/openapi.json` plus a deliberately drifted copy, and an endpoint whose
-  response differs from its spec.
-- `make e2e` (or `go test -tags e2e ./e2e`) starts the mock, runs a battery of flows and checks exit codes,
-  `error_kind`s, drift/coverage/spec-drift blocks and secret masking, the way the old self-test did.
-- Database scenarios stay opt-in via `SLEUTH_TEST_PG_DSN` / `SLEUTH_TEST_MONGO_DSN` (scratch databases only).
-- Run it with `--parallel 1` and `--parallel 4` to catch ordering bugs.
+What building it turned up:
+- **A real product bug.** Parallel contract nodes shared one JSON Schema compiler and one cache of compiled schemas
+  with no locking, so unlucky timing hit Go's "concurrent map writes" crash and the program exited 2 (a flow error)
+  instead of running. It had been there since parallel execution and contracts were combined; no earlier test ran
+  contract nodes in parallel. Fixed with a lock around compilation, and a unit test that fails under `-race` without it.
+  The suite saw it as a one-in-three flake, which is why `make e2e-race` exists.
+- **A stale-cache trap in the suite itself.** The e2e package does not import `cmd/sleuth`, so Go reused a cached
+  pass after the program was broken. The harness now opens every source file, which makes them inputs to the cache.
+  Both facts are checked: a deliberately broken program fails the suite without `-count=1`.
 
-**Exit criteria:** one command, no external services, covers every exit code and node kind, and runs in under a
-minute.
+Verification: five deliberate breakages of the product (the exit code for infrastructure failures, secret masking,
+exact number comparison, the drift block when no contract step ran, sending a request that breaks its contract) each fail
+the suite; five consecutive `e2e-race` runs passed; the Postgres scenarios pass and the smuggled write leaves no table.
+
+Not covered end to end: MongoDB nodes (unit and live tests cover them) and the `serve` dashboard (its own tests).
 
 ## Milestone 3 — Close the known limits
 

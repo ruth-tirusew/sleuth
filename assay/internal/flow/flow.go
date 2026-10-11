@@ -46,6 +46,10 @@ type Contract struct {
 	Source string `yaml:"source" json:"source"`
 	// OnViolation is "fail" (default) or "warn" (record evidence, don't fail the step).
 	OnViolation string `yaml:"on_violation,omitempty" json:"on_violation,omitempty"`
+	// DeferResponse is set by the runner, never by a flow: response violations are recorded
+	// but left for the caller to judge (a poll judges only the attempt that satisfied it).
+	// Request-side violations still stop the request before it is sent.
+	DeferResponse bool `yaml:"-" json:"-"`
 }
 
 func (c *Contract) UnmarshalYAML(n *yaml.Node) error {

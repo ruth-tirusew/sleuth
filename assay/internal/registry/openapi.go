@@ -134,9 +134,16 @@ func (s *Spec) Find(method, urlPath string) (*Operation, bool) {
 
 var serverVarRe = regexp.MustCompile(`\{([^}]+)\}`)
 
-// serverPrefixes returns the path component of each `servers[].url`, with server
-// variables replaced by their defaults. Root and empty paths are dropped.
+// serverPrefixes is declaredServerPrefixes, longest first, for matching.
 func (s *Spec) serverPrefixes() []string {
+	out := s.DeclaredServerPrefixes()
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+// DeclaredServerPrefixes returns the path component of each `servers[].url` in document
+// order, with server variables replaced by their defaults. Root and empty paths are dropped.
+func (s *Spec) DeclaredServerPrefixes() []string {
 	servers, _ := s.doc["servers"].([]any)
 	var out []string
 	for _, sv := range servers {
@@ -166,7 +173,6 @@ func (s *Spec) serverPrefixes() []string {
 			out = append(out, path)
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) }) // longest first
 	return out
 }
 

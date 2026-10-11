@@ -55,14 +55,17 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 				return nil, specErr(fmt.Errorf("bad timeout: %w", err))
 			}
 		}
-		// Intermediate answers ("PENDING") legitimately differ from the final shape, so each
-		// attempt is checked in warn mode and the verdict is made once, in finish: the
-		// satisfying attempt's findings plus any undocumented status seen along the way.
-		// Only request-side findings are deterministic enough to stop early.
+		// Intermediate answers ("PENDING") legitimately differ from the final shape, so
+		// response findings are deferred: the verdict is made once, in finish, from the
+		// satisfying attempt plus any undocumented status seen along the way. Request-side
+		// findings (operation not in the contract, bad request body) are the same on every
+		// attempt and block as in a request node, so the request is never sent.
 		var attemptContract *flow.Contract
 		var carried []report.Violation
 		if n.Contract != nil {
-			attemptContract = &flow.Contract{Source: n.Contract.Source, OnViolation: "warn"}
+			c := *n.Contract
+			c.DeferResponse = true
+			attemptContract = &c
 		}
 		attempt = func(remaining time.Duration) (map[string]any, int, int, error) {
 			r := req
@@ -72,16 +75,6 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 				for _, v := range cr.Violations {
 					if undocumented(v) {
 						carried = append(carried, v)
-					}
-				}
-				if n.Contract.OnViolation == "warn" {
-					cr.Mode = "warn"
-				} else {
-					cr.Mode = "fail"
-				}
-				for _, v := range cr.Violations {
-					if v.Where != "response" && cr.Mode == "fail" { // operation/request: same every attempt
-						return nil, 0, 0, contractErr(fmt.Errorf("poll request disagrees with %s contract: [%s] %s %s", cr.Source, v.Where, v.Path, v.Message))
 					}
 				}
 			}

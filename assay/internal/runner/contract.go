@@ -50,13 +50,15 @@ type contractRun struct {
 	op   *registry.Operation
 	res  *report.ContractResult
 	warn bool
+	// deferResponse: response findings are recorded but never block (see flow.Contract).
+	deferResponse bool
 }
 
 func newContractRun(c *flow.Contract, specs map[string]*registry.Spec, method, path string) *contractRun {
 	if c == nil {
 		return nil
 	}
-	cr := &contractRun{spec: specs[c.Source], warn: c.OnViolation == "warn"}
+	cr := &contractRun{spec: specs[c.Source], warn: c.OnViolation == "warn", deferResponse: c.DeferResponse}
 	mode := "fail"
 	if cr.warn {
 		mode = "warn"
@@ -77,6 +79,9 @@ func (c *contractRun) violate(where, path, msg string) {
 }
 
 func (c *contractRun) blocking() bool { return !c.warn && len(c.res.Violations) > 0 }
+
+// blockingResponse is blocking() for the response stage.
+func (c *contractRun) blockingResponse() bool { return !c.deferResponse && c.blocking() }
 
 func (c *contractRun) err(stage string) error {
 	v := c.res.Violations[0]

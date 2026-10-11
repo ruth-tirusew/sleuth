@@ -128,7 +128,7 @@ func execRequest(ctx *Context, n flow.Node, step *report.Step, specs map[string]
 	}
 	if cr != nil {
 		cr.checkResponse(resp.StatusCode, parsed)
-		if cr.blocking() {
+		if cr.blockingResponse() {
 			return nil, contractErr(cr.err("response"))
 		}
 	}

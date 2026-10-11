@@ -204,7 +204,7 @@ func TestPollContractWarnModeRecordsButPasses(t *testing.T) {
 	}
 }
 
-func TestPollContractUnknownOperationStopsAtOnce(t *testing.T) {
+func TestPollContractUnknownOperationIsNeverSent(t *testing.T) {
 	var hits int32
 	r := runContract(t, `
 version: 1
@@ -219,7 +219,7 @@ nodes:
       request: {url: "{{ .env.base }}/nope"}
       until: [{path: nodes.wait.response.status, equals: 200}]
 `, func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hits, 1) })
-	if w := step(r, "wait"); w.ErrorKind != KindContract || atomic.LoadInt32(&hits) > 1 {
+	if w := step(r, "wait"); w.ErrorKind != KindContract || atomic.LoadInt32(&hits) != 0 {
 		t.Fatalf("hits=%d %+v", hits, w)
 	}
 }
@@ -263,5 +263,29 @@ func TestPollBackoffLeavesRoomForALastAttempt(t *testing.T) {
 	r := runYAML(t, srv.URL, y)
 	if w := step(r, "wait"); w.ErrorKind != KindTimeout || time.Since(start) > time.Second || *calls < 2 {
 		t.Fatalf("calls=%d %+v", *calls, w)
+	}
+}
+
+func TestPollContractBadRequestBodyIsNeverSent(t *testing.T) {
+	var hits int32
+	r := runContract(t, `
+version: 1
+name: t
+nodes:
+  - id: wait
+    kind: poll
+    contract: api
+    poll:
+      interval: 10ms
+      timeout: 5s
+      request: {method: POST, url: "{{ .env.base }}/users", body: {name: 5, junk: true}}
+      until: [{path: nodes.wait.response.status, equals: 201}]
+`, func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hits, 1) })
+	w := step(r, "wait")
+	if w.ErrorKind != KindContract || atomic.LoadInt32(&hits) != 0 || w.Response != nil || len(w.Contract.Violations) != 2 {
+		t.Fatalf("hits=%d %+v %+v", hits, w, w.Contract)
+	}
+	if w.Poll.Attempts != 1 {
+		t.Fatalf("a request that can never be valid must not be retried: %d attempts", w.Poll.Attempts)
 	}
 }

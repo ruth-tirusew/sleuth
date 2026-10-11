@@ -197,6 +197,9 @@ func (s *Spec) ScaffoldNode(op *Operation, source, id string) string {
 		fmt.Fprintf(&b, "      method: %s\n", method)
 	}
 	url := tpl
+	if pre := s.DeclaredServerPrefixes(); len(pre) > 0 {
+		url = pre[0] + url // base_url is the host; the spec's first server says where the API is mounted
+	}
 	for _, p := range params {
 		if p.In == "path" {
 			url = strings.ReplaceAll(url, "{"+p.Name+"}", ref("env", p.Name))

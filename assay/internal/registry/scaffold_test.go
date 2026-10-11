@@ -180,3 +180,19 @@ func TestOperationsIncludesTrace(t *testing.T) {
 		t.Errorf("%v", ops)
 	}
 }
+
+func TestScaffoldUsesFirstServerPrefix(t *testing.T) {
+	s := loadDoc(t, `{"openapi":"3.1.0","servers":[{"url":"https://h.example/api/v1/"},{"url":"/other"}],
+	  "paths":{"/users/{id}":{"get":{"parameters":[{"name":"id","in":"path","required":true,"schema":{"type":"string"}}],"responses":{"200":{}}}}}}`)
+	op, _ := s.Find("GET", "/api/v1/users/3")
+	out := s.ScaffoldNode(op, "api", "get_user")
+	if !strings.Contains(out, `url: "{{ .env.base_url }}/api/v1/users/{{ .env.id }}"`) {
+		t.Fatalf("%s", out)
+	}
+	// no servers: unchanged
+	plain := loadDoc(t, `{"openapi":"3.1.0","paths":{"/x":{"get":{"responses":{"200":{}}}}}}`)
+	op, _ = plain.Find("GET", "/x")
+	if out := plain.ScaffoldNode(op, "api", "get_x"); !strings.Contains(out, `url: "{{ .env.base_url }}/x"`) {
+		t.Fatalf("%s", out)
+	}
+}

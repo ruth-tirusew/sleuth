@@ -198,6 +198,9 @@ func snapshotSpec(args []string) int {
 		fmt.Fprintf(os.Stderr, "error: %s already exists. It is what drift is measured against; review `sleuth diff %s %s` first, then pass -force to replace it.\n", dest, dest, loc)
 		return 2
 	}
+	if asJSON, err := registry.ToJSON(raw); err == nil { // a YAML spec is saved as JSON, like any baseline
+		raw = asJSON
+	}
 	var pretty bytes.Buffer
 	if err := json.Indent(&pretty, raw, "", "  "); err != nil {
 		pretty.Reset()

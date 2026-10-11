@@ -71,7 +71,7 @@ func Fetch(src string) ([]byte, error) {
 	return os.ReadFile(src)
 }
 
-// Load reads an OpenAPI 3.x JSON document from a file path or http(s) URL.
+// Load reads an OpenAPI 3.x document (JSON or YAML) from a file path or http(s) URL.
 func Load(src string) (*Spec, error) {
 	b, err := Fetch(src)
 	if err != nil {
@@ -80,9 +80,13 @@ func Load(src string) (*Spec, error) {
 	return Parse(src, b)
 }
 
-// Parse reads an OpenAPI 3.x JSON document; src only labels it in errors.
+// Parse reads an OpenAPI 3.x document, JSON or YAML; src only labels it in errors.
 func Parse(src string, b []byte) (*Spec, error) {
 	s := &Spec{Source: src, compiled: map[string]*jsonschema.Schema{}}
+	b, err := ToJSON(b)
+	if err != nil {
+		return nil, fmt.Errorf("parse OpenAPI %s: %w", src, err)
+	}
 	// UnmarshalJSON keeps numbers exact (json.Number), which the schema compiler expects.
 	raw, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))
 	if err != nil {

@@ -99,7 +99,7 @@ func Parse(src string, b []byte) (*Spec, error) {
 		return nil, fmt.Errorf("%s: no paths", src)
 	}
 	if strings.HasPrefix(s.doc["openapi"].(string), "3.0") {
-		upgradeNullable(s.doc) // 3.0's `nullable` is not JSON Schema 2020-12
+		upgrade30(s.doc) // 3.0 schemas are not quite JSON Schema 2020-12: translate the differences
 	}
 	s.comp = jsonschema.NewCompiler()
 	s.comp.DefaultDraft(jsonschema.Draft2020)
@@ -109,23 +109,67 @@ func Parse(src string, b []byte) (*Spec, error) {
 	return s, nil
 }
 
-// upgradeNullable rewrites OpenAPI 3.0 `nullable: true` into `type: [T, "null"]`.
-func upgradeNullable(v any) {
+// upgrade30 translates the parts of OpenAPI 3.0's schema dialect that JSON Schema 2020-12 (the
+// dialect of 3.1, which the validator implements) reads differently or rejects:
+//
+//   - `exclusiveMinimum: true` / `exclusiveMaximum: true` are booleans modifying `minimum` /
+//     `maximum` in 3.0, and the bound itself in 2020-12. A boolean left in place makes the
+//     whole schema invalid, so every call to that operation would be reported as a violation.
+//   - `nullable: true` allows null. With a plain `type` it becomes `type: [T, "null"]` (and null
+//     joins an `enum`, which would otherwise still reject it). Without one (next to a `$ref`, an
+//     `allOf`, ...) the schema becomes `anyOf: [<the schema>, {type: null}]`.
+//
+// Only boolean values of those keywords are rewritten, so an object property that happens to be
+// called "minimum" or "nullable" (whose value is a schema) is left alone.
+func upgrade30(v any) {
 	switch x := v.(type) {
 	case map[string]any:
-		if x["nullable"] == true {
-			if t, ok := x["type"].(string); ok {
-				x["type"] = []any{t, "null"}
+		for _, kw := range [][2]string{{"exclusiveMinimum", "minimum"}, {"exclusiveMaximum", "maximum"}} {
+			if b, isBool := x[kw[0]].(bool); isBool {
+				delete(x, kw[0])
+				if bound, has := x[kw[1]]; b && has {
+					if _, isSchema := bound.(map[string]any); !isSchema {
+						x[kw[0]] = bound
+						delete(x, kw[1])
+					}
+				}
+			}
+		}
+		if n, isBool := x["nullable"].(bool); isBool {
+			delete(x, "nullable")
+			if n {
+				if t, ok := x["type"].(string); ok {
+					x["type"] = []any{t, "null"}
+					if enum, ok := x["enum"].([]any); ok && !hasNil(enum) {
+						x["enum"] = append(enum, nil)
+					}
+				} else {
+					inner := make(map[string]any, len(x))
+					for k, val := range x {
+						inner[k] = val
+						delete(x, k)
+					}
+					x["anyOf"] = []any{inner, map[string]any{"type": "null"}}
+				}
 			}
 		}
 		for _, c := range x {
-			upgradeNullable(c)
+			upgrade30(c)
 		}
 	case []any:
 		for _, c := range x {
-			upgradeNullable(c)
+			upgrade30(c)
 		}
 	}
+}
+
+func hasNil(list []any) bool {
+	for _, e := range list {
+		if e == nil {
+			return true
+		}
+	}
+	return false
 }
 
 // Find matches a concrete request path against the spec's path templates.

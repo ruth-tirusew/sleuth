@@ -21,7 +21,7 @@ Commands:
 | Command | Purpose |
 |---|---|
 | `sleuth validate [--parallel N] <flow>` | Check a flow and print its execution order; with `--parallel`, also which nodes would run together |
-| `sleuth run [-env env.yaml] [-out evidence.json] [--parallel N] [-spec-drift-fail breaking\|review] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1); `-spec-drift-fail` fails the run if the live spec has drifted from its saved baseline |
+| `sleuth run [-env env.yaml] [-out evidence.json] [--parallel N] [-spec-drift-fail breaking\|review] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1); `-spec-drift-fail` fails the run if the live spec has drifted from its saved baseline; `-shapes` / `-record-shapes` / `-shape-drift-fail` compare with or record a [behavioural snapshot](#behavioural-snapshots) |
 | `sleuth snapshot -env env.yaml -source NAME [-out file] [-force]` | Save a contract source's live OpenAPI document as its baseline, for runs to compare against |
 | `sleuth diff [-fail-on breaking\|review\|never] [-json] OLD NEW` | Compare two versions of an OpenAPI document and list what would break a client written against the old one |
 | `sleuth serve [-dir flows] [-env default.env.yaml] [-addr 127.0.0.1:8787]` | Local web dashboard: pick a flow, run it (optionally in parallel), watch it live; each flow uses its paired `<name>.env.yaml` |
@@ -67,7 +67,7 @@ Templates (`{{ ... }}`) can read:
 | Path | Contents |
 |---|---|
 | `.env.<name>` | `vars:` from the env file |
-| `.secrets.<NAME>` | process environment variables listed under `secrets:` (masked in evidence) |
+| `.secrets.<NAME>` | process environment variables listed under `secrets:` (masked in evidence and in printed output) |
 | `.nodes.<id>.response.{status,headers,body,raw}` | a request node's response (`body` is absent for non-JSON) |
 | `.nodes.<id>.rows`, `.row_count` | a db node's result |
 | `.nodes.<id>.out.<name>` | values a node `extract`ed or `transform`ed |
@@ -181,7 +181,9 @@ Bind a request node to a provider's OpenAPI 3.x document:
 
 Sleuth finds the operation by method and path template, then validates the outgoing JSON body (a violating
 request is **not sent**) and the response (documented status, JSON Schema). Schemas are checked by a full JSON
-Schema 2020-12 implementation, the dialect of OpenAPI 3.1; OpenAPI 3.0 `nullable` is upgraded automatically.
+Schema 2020-12 implementation, the dialect of OpenAPI 3.1. OpenAPI 3.0 documents are translated where 3.0 means something
+different: `nullable` (including next to a `$ref`, an `allOf` or an `enum`) and boolean `exclusiveMinimum` /
+`exclusiveMaximum`. Swagger 2.0 is not supported.
 
 - A violation fails the step with `error_kind: contract`, unless the node sets `on_violation: warn`, which records
   the finding and lets the step pass (for accepted drift and deliberate negative tests).
@@ -206,10 +208,48 @@ Design notes: [`docs/decisions/0001-contract-source.md`](docs/decisions/0001-con
 published OpenAPI) and [`docs/decisions/0002-drift-reporting.md`](docs/decisions/0002-drift-reporting.md) (how drift
 is reported) and [`docs/decisions/0005-registry-coverage.md`](docs/decisions/0005-registry-coverage.md) (Phase 4 scope).
 
+## Behavioural snapshots
+
+A spec baseline only sees what the spec says. A response the spec leaves undocumented can change shape and nothing
+notices. A **behavioural snapshot** records how the system actually behaved: the *structure* of each step's response
+(types, fields, which fields are optional), taken from a known-good run. Later runs are compared against it.
+
+    sleuth run -env env.yaml -record-shapes snapshots/checkout.json checkout.flow.yaml     # from a passing run
+    sleuth run -env env.yaml -shapes snapshots/checkout.json checkout.flow.yaml            # compare (report only)
+    sleuth run -env env.yaml -shapes snapshots/checkout.json -shape-drift-fail breaking checkout.flow.yaml
+
+A snapshot stores **no values**, only structure, so it holds no customer data and is safe to commit. Each response is
+attributed to the step that received it, so a snapshot belongs to one flow (it records the flow's name and a hash, and
+says so if the flow file has changed since). Database steps record the shape of their rows. It needs no contract.
+
+Comparison is from the client's side. Breaking: a field the snapshot always had is missing or now sometimes missing, a
+field's type changed or gained a type (including `null`, or a decimal where there were only integers), or the HTTP
+status is different. Compatible: a field was added. A type that was recorded but did not appear this time is not
+reported: that is variety in the data. The result is a **Behaviour drift** section in the report and in
+`drift.behaviour` in the evidence. `-shape-drift-fail breaking` fails the run (exit 1) on any breaking change, and
+`-shape-drift-fail any` on any change at all.
+
+Recording is deliberate:
+- It only happens after a **passing** run (`-force` overrides): a snapshot of a failing run would bless the failure.
+- An existing snapshot is **never replaced silently.** If the run differs from it, the differences are printed and
+  nothing is written (exit 2) unless `-force` is given, which keeps the old file as `FILE.prev` and prints what was accepted.
+  Accepting drift is a decision; the tool shows what you are deciding.
+- `-merge` widens an existing snapshot instead of replacing it. One run cannot tell an optional field from a required
+  one, so record several known-good runs (or several environments) with `-merge`: types are unioned and a field missing
+  from any run becomes optional.
+
+Each file records when it was recorded, by which build, for which environment, how many runs are in it, and the status
+and (if any) contract operation of each step. Keep snapshots in git: that is their history. Limits: it only sees what the
+flow exercises, and shapes do not capture a change of *value* (units, an enum gaining a member); assertions and
+contracts cover those. Design: [`docs/decisions/0007-behavioural-snapshots.md`](docs/decisions/0007-behavioural-snapshots.md).
+
 ## Evidence and results
 
 Each run writes a JSON file (`evidence/<flow>-<timestamp>.json`, or `-out`) with, per step: request, response,
-timing, check results, contract/poll/db details, output, and error. Secret values are replaced with `***`, and
+timing, check results, contract/poll/db details, output, and error. Secret values are replaced with `***` in the evidence file and in everything printed (the report and error
+messages), including the forms a secret takes once it is put into a request: percent-encoded in a URL query or path,
+and base64 for secrets of 8 characters or more. A value *derived* from a secret is not masked: a hash, or a Basic auth
+header built from `user:secret` (put the whole credential in one secret instead), and
 database evidence records the connection *name*, never the connection string. A readable summary is printed too.
 
 Failed steps carry an `error_kind`:

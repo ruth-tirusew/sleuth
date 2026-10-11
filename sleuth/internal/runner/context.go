@@ -89,6 +89,19 @@ func (c *EnvConfig) DatabaseDSN(name string) (string, error) {
 	return v, nil
 }
 
+// SecretValues returns the values of the secrets the env file names that are set in the process
+// environment, so a caller can mask them in anything it prints (unset secrets are a setup error
+// later, in NewContext).
+func (c *EnvConfig) SecretValues() []string {
+	var out []string
+	for _, name := range c.Secrets {
+		if v, ok := os.LookupEnv(name); ok && v != "" {
+			out = append(out, v)
+		}
+	}
+	return out
+}
+
 // ContractLocation expands and resolves the OpenAPI location for a contract source.
 // Files are relative to the env file.
 func (c *EnvConfig) ContractLocation(source string) (string, error) {

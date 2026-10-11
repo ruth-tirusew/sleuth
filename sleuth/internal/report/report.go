@@ -2,10 +2,15 @@
 package report
 
 import (
+	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"sleuth/internal/shape"
+	"sort"
 	"strings"
 	"time"
 )
@@ -40,8 +45,11 @@ type Step struct {
 	Contract   *ContractResult `json:"contract,omitempty"`
 	Poll       *PollResult     `json:"poll,omitempty"`
 	DB         *DBResult       `json:"db,omitempty"`
-	Output     map[string]any  `json:"output,omitempty"`
-	Error      string          `json:"error,omitempty"`
+	// Shape is the structure of this step's response (or database rows), recorded when the run
+	// was asked to capture shapes. It holds no values.
+	Shape  *shape.Entry   `json:"shape,omitempty"`
+	Output map[string]any `json:"output,omitempty"`
+	Error  string         `json:"error,omitempty"`
 	// ErrorKind is set on failed steps: assertion, infrastructure or spec.
 	ErrorKind string `json:"error_kind,omitempty"`
 }
@@ -124,18 +132,72 @@ func WriteJSON(path string, r *Run, secrets []string) error {
 	return os.WriteFile(path, MaskJSON(b, secrets), 0o644)
 }
 
-// MaskJSON replaces every secret value in marshalled JSON with ***. Anything that
-// leaves the process (evidence files, a UI) must go through it.
+// MaskJSON replaces every secret value in marshalled JSON with ***, in each form a secret can
+// take on its way into a request (see secretForms). Anything that leaves the process
+// (evidence files, a UI) must go through it.
 func MaskJSON(b []byte, secrets []string) []byte {
-	s := string(b)
+	var escaped []string
+	for _, f := range secretForms(secrets) {
+		// both JSON spellings: with HTML characters escaped (\u0026, as json.Marshal writes them)
+		// and without (as an encoder with SetEscapeHTML(false) writes them)
+		esc, _ := json.Marshal(f)
+		escaped = append(escaped, strings.Trim(string(esc), `"`))
+		var plain bytes.Buffer
+		enc := json.NewEncoder(&plain)
+		enc.SetEscapeHTML(false)
+		enc.Encode(f)
+		escaped = append(escaped, strings.Trim(strings.TrimSpace(plain.String()), `"`))
+	}
+	sort.SliceStable(escaped, func(i, j int) bool { return len(escaped[i]) > len(escaped[j]) })
+	return []byte(replaceAll(string(b), escaped))
+}
+
+// MaskText is MaskJSON for plain text: the printed report and error messages.
+func MaskText(s string, secrets []string) string {
+	return replaceAll(s, secretForms(secrets))
+}
+
+// minEncodedSecret is the shortest secret whose base64 form is also masked: the base64 of a
+// very short value is a short, common-looking string, and masking it would mangle unrelated text.
+const minEncodedSecret = 8
+
+// secretForms lists every secret together with the forms it takes once it is put into a
+// request: percent-encoded in a URL query or path (as Go writes a whole path, and as one
+// escaped segment), and base64 (as in a Basic auth header, when
+// the secret is the whole credential). Longest first, so a longer form is masked before any
+// shorter form it contains.
+func secretForms(secrets []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	add := func(f string) {
+		if f != "" && !seen[f] {
+			seen[f] = true
+			out = append(out, f)
+		}
+	}
 	for _, sec := range secrets {
 		if sec == "" {
 			continue
 		}
-		esc, _ := json.Marshal(sec)
-		s = strings.ReplaceAll(s, strings.Trim(string(esc), `"`), "***")
+		add(sec)
+		add(url.QueryEscape(sec))
+		add(url.PathEscape(sec))
+		add((&url.URL{Path: sec}).EscapedPath()) // inside a path, where "/" stays a separator
+		if len(sec) >= minEncodedSecret {
+			add(base64.StdEncoding.EncodeToString([]byte(sec)))
+			add(base64.URLEncoding.EncodeToString([]byte(sec)))
+			add(base64.RawStdEncoding.EncodeToString([]byte(sec)))
+		}
 	}
-	return []byte(s)
+	sort.SliceStable(out, func(i, j int) bool { return len(out[i]) > len(out[j]) })
+	return out
+}
+
+func replaceAll(s string, forms []string) string {
+	for _, f := range forms {
+		s = strings.ReplaceAll(s, f, "***")
+	}
+	return s
 }
 
 // Print renders a human-readable summary.

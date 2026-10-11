@@ -32,6 +32,8 @@ type Service struct {
 	jobs  map[string]*job
 	flaky map[string]int
 	next  int
+	// profile is which version of GET /profile is served; see SetProfileVersion.
+	profile int
 }
 
 type job struct {
@@ -45,7 +47,7 @@ func New(c ...Credentials) *Service {
 	if len(c) > 0 {
 		cr = c[0]
 	}
-	return &Service{creds: cr, jobs: map[string]*job{}, flaky: map[string]int{}}
+	return &Service{creds: cr, jobs: map[string]*job{}, flaky: map[string]int{}, profile: 1}
 }
 
 // Handler routes every endpoint:
@@ -62,6 +64,10 @@ func New(c ...Credentials) *Service {
 //	GET  /slow?ms=N           answers after N milliseconds
 //	GET  /hang                never answers (until the client gives up)
 //	GET  /flaky/{key}         drops the connection on its first two calls, then answers
+//	GET  /profile             NOT in the spec. Its response structure changes with the version set by
+//	                          POST /admin/profile-version?v=N (or SetProfileVersion): 1 is the original, 2 changes
+//	                          several fields, 3 is a 404. This is the case a spec diff cannot see
+//	GET  /orders              a list whose items sometimes lack "note" (also not in the spec)
 //	GET  /openapi.json        the published contract; /openapi.v2.json is a later, breaking version
 func (s *Service) Handler() http.Handler {
 	mux := http.NewServeMux()
@@ -111,6 +117,19 @@ func (s *Service) Handler() http.Handler {
 		}
 	})
 	mux.HandleFunc("GET /flaky/{key}", s.flakyEndpoint)
+	mux.HandleFunc("GET /profile", s.profileHandler)
+	mux.HandleFunc("POST /admin/profile-version", func(w http.ResponseWriter, r *http.Request) {
+		v, err := strconv.Atoi(r.URL.Query().Get("v"))
+		if err != nil || v < 1 || v > 3 {
+			writeJSON(w, 400, `{"error":"v must be 1, 2 or 3"}`)
+			return
+		}
+		s.SetProfileVersion(v)
+		writeJSON(w, 200, fmt.Sprintf(`{"version":%d}`, v))
+	})
+	mux.HandleFunc("GET /orders", func(w http.ResponseWriter, _ *http.Request) {
+		writeJSON(w, 200, `[{"id":1,"total":10.5,"note":"gift"},{"id":2,"total":7}]`)
+	})
 	mux.HandleFunc("GET /openapi.json", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, string(Spec(1))) })
 	mux.HandleFunc("GET /openapi.v2.json", func(w http.ResponseWriter, _ *http.Request) { writeJSON(w, 200, string(Spec(2))) })
 	return mux
@@ -193,6 +212,27 @@ func (s *Service) flakyEndpoint(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	writeJSON(w, 200, fmt.Sprintf(`{"ok":true,"calls":%d}`, n))
+}
+
+// SetProfileVersion changes what GET /profile returns, as if someone changed the DTO mid-testing.
+func (s *Service) SetProfileVersion(v int) {
+	s.mu.Lock()
+	s.profile = v
+	s.mu.Unlock()
+}
+
+func (s *Service) profileHandler(w http.ResponseWriter, _ *http.Request) {
+	s.mu.Lock()
+	v := s.profile
+	s.mu.Unlock()
+	switch v {
+	case 2: // id is now a string, balance is gone, tags can be null, address lost zip, nick is new
+		writeJSON(w, 200, `{"id":"42","name":"alice","tags":null,"address":{"city":"Addis"},"nick":"al"}`)
+	case 3:
+		writeJSON(w, 404, `{"error":"gone"}`)
+	default:
+		writeJSON(w, 200, `{"id":42,"name":"alice","balance":100.5,"tags":["a","b"],"address":{"city":"Addis","zip":"1000"}}`)
+	}
 }
 
 func writeJSON(w http.ResponseWriter, status int, body string) {

@@ -18,6 +18,9 @@ type Options struct {
 	// FailOnSpecDrift makes the run fail when a contract source differs from its saved baseline
 	// by at least this severity: "breaking" or "review". Empty records the differences only.
 	FailOnSpecDrift string
+	// CaptureShapes records, on each step that returned JSON, the structure of its response (or
+	// database rows) as Step.Shape, so a run can be compared with, or recorded as, a shape snapshot.
+	CaptureShapes bool
 	// OnEvent, if set, is told about progress as it happens. It is called from a single
 	// goroutine (the scheduler), in order, and must not block for long. Steps in events
 	// carry unmasked evidence: mask before they leave the process.
@@ -177,6 +180,11 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	close(jobs)
 
 	run.Steps = steps
+	if opts.CaptureShapes {
+		for i := range run.Steps {
+			run.Steps[i].Shape = stepShape(&run.Steps[i])
+		}
+	}
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
 	if len(specs) > 0 {

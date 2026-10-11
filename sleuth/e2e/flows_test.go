@@ -2,12 +2,16 @@ package e2e
 
 import (
 	"fmt"
+	"net/url"
 	"strings"
 	"testing"
 	"time"
 
 	"sleuth/internal/report"
 )
+
+// apiToken has characters that change when percent-encoded into a URL.
+const apiToken = "p@ss w/rd&x=1"
 
 type scenario struct {
 	name  string
@@ -37,6 +41,22 @@ func TestFlows(t *testing.T) {
 				}
 				if p > 1 && r.run.Parallel != p || p == 1 && r.run.Parallel != 0 {
 					t.Errorf("run.parallel = %d for -parallel %d", r.run.Parallel, p)
+				}
+			},
+		},
+		{
+			name: "a secret never appears, in any encoding, in output or evidence", flow: "secret-in-url", exit: 3,
+			opts:  runOptions{env: "env-secret.yaml", extraEnv: []string{"API_TOKEN=" + apiToken}},
+			steps: map[string]string{"call": "infrastructure"},
+			check: func(t *testing.T, r *result, _ int) {
+				raw := r.rawEvidence(t)
+				for _, form := range []string{apiToken, url.QueryEscape(apiToken), url.PathEscape(apiToken), "p@ss", "p%40ss"} {
+					if strings.Contains(r.stdout, form) || strings.Contains(r.stderr, form) || strings.Contains(raw, form) {
+						t.Errorf("the secret leaked as %q", form)
+					}
+				}
+				if !strings.Contains(r.stdout, "***") {
+					t.Errorf("the masked value should be visible as ***:\n%s", r.stdout)
 				}
 			},
 		},

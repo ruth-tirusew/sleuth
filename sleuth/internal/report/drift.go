@@ -4,6 +4,10 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"strings"
+	"time"
+
+	"sleuth/internal/shape"
 )
 
 // DriftSummary is the run-level view of registry-vs-live disagreement: every contract
@@ -22,6 +26,72 @@ type DriftSummary struct {
 	SpecDrift []SpecDrift `json:"spec_drift,omitempty"`
 	// Sources says, per contract source, how much of the published registry this run exercised.
 	Sources []SourceCoverage `json:"sources,omitempty"`
+	// Behaviour is how this run's responses differ from a recorded shape snapshot (see
+	// docs/decisions/0007). It needs no contract.
+	Behaviour *BehaviourDrift `json:"behaviour,omitempty"`
+
+	behaviourOnly bool // the block exists only for Behaviour: no contract was involved
+}
+
+// BehaviourDrift compares the shapes of this run's responses with a recorded snapshot.
+type BehaviourDrift struct {
+	Snapshot   string         `json:"snapshot"` // the file compared against
+	RecordedAt time.Time      `json:"recorded_at"`
+	Tool       string         `json:"tool,omitempty"`
+	Runs       int            `json:"runs"`
+	Breaking   int            `json:"breaking"`
+	Info       int            `json:"info"`
+	Failing    bool           `json:"failing,omitempty"`
+	Changes    []shape.Change `json:"changes"`
+	Notes      []string       `json:"notes,omitempty"`
+}
+
+// BehaviourInput is what AddBehaviourDrift needs to know about the snapshot and the flow.
+type BehaviourInput struct {
+	Path    string // the snapshot file, for the report
+	Snap    *shape.Snapshot
+	FailOn  string // "", "breaking" or "any"
+	Flow    string
+	FlowSHA string
+	Now     time.Time
+}
+
+// AddBehaviourDrift compares the shapes captured on r's steps with the snapshot and records the
+// result in r.Drift.Behaviour. With FailOn "breaking" (or "any", which also fails on compatible
+// changes) a difference of that severity fails the run.
+func AddBehaviourDrift(r *Run, in BehaviourInput) {
+	observed := map[string]shape.Entry{}
+	for _, s := range r.Steps {
+		if s.Shape != nil {
+			observed[s.ID] = *s.Shape
+		}
+	}
+	b := &BehaviourDrift{Snapshot: in.Path, RecordedAt: in.Snap.Recorded.At, Tool: in.Snap.Recorded.Tool, Runs: in.Snap.Recorded.Runs, Changes: []shape.Change{}}
+	b.Changes = append(b.Changes, shape.Compare(in.Snap, observed)...)
+	for _, c := range b.Changes {
+		if c.Severity == shape.Breaking {
+			b.Breaking++
+		} else {
+			b.Info++
+		}
+	}
+	b.Failing = (in.FailOn == "breaking" && b.Breaking > 0) || (in.FailOn == "any" && len(b.Changes) > 0)
+	if in.Snap.Flow != "" && in.Flow != "" && in.Snap.Flow != in.Flow {
+		b.Notes = append(b.Notes, fmt.Sprintf("the snapshot was recorded for flow %q, this is %q", in.Snap.Flow, in.Flow))
+	}
+	if in.Snap.FlowSHA != "" && in.FlowSHA != "" && in.Snap.FlowSHA != in.FlowSHA {
+		b.Notes = append(b.Notes, "the flow file has changed since the snapshot was recorded")
+	}
+	if len(observed) == 0 {
+		b.Notes = append(b.Notes, "no step produced a JSON response, so nothing was compared")
+	}
+	if r.Drift == nil {
+		r.Drift = &DriftSummary{Findings: []DriftFinding{}, behaviourOnly: true}
+	}
+	r.Drift.Behaviour = b
+	if b.Failing {
+		r.Status = Failed
+	}
 }
 
 // SpecDrift is the difference between a contract source's saved baseline and the live document,
@@ -203,6 +273,11 @@ func printDrift(w io.Writer, d *DriftSummary) {
 		return
 	}
 	fmt.Fprintln(w)
+	if d.behaviourOnly {
+		printBehaviour(w, d.Behaviour)
+		return
+	}
+	defer printBehaviour(w, d.Behaviour)
 	if len(d.Findings) == 0 {
 		if d.CallsChecked == 0 {
 			fmt.Fprintln(w, "Contract drift: none found, but no contract call ran, so nothing was checked")
@@ -272,5 +347,36 @@ func printDrift(w io.Writer, d *DriftSummary) {
 		for _, g := range d.Coverage {
 			fmt.Fprintf(w, "  %s %s: %s  (step %s)\n", g.Source, g.Operation, g.Note, g.Step)
 		}
+	}
+}
+
+func printBehaviour(w io.Writer, b *BehaviourDrift) {
+	if b == nil {
+		return
+	}
+	tag := ""
+	if b.Failing {
+		tag = "FAIL  "
+	}
+	age := ""
+	if !b.RecordedAt.IsZero() {
+		age = fmt.Sprintf(", recorded %s", b.RecordedAt.Local().Format("2006-01-02"))
+	}
+	fmt.Fprintf(w, "Behaviour drift: %s%d breaking, %d compatible, against %s (%d run(s)%s)\n", tag, b.Breaking, b.Info, b.Snapshot, b.Runs, age)
+	shown := 0
+	for _, c := range b.Changes {
+		if shown == maxUntestedShown {
+			fmt.Fprintf(w, "  ... and more (all listed in the evidence JSON)\n")
+			break
+		}
+		shown++
+		where := c.Step
+		if c.Path != "" {
+			where += " " + c.Path
+		}
+		fmt.Fprintf(w, "  [%s] %s: %s\n", c.Severity, strings.TrimSpace(where), c.Message)
+	}
+	for _, n := range b.Notes {
+		fmt.Fprintf(w, "  note: %s\n", n)
 	}
 }

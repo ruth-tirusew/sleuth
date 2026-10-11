@@ -7,6 +7,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io/fs"
 	"net/http/httptest"
 	"os"
@@ -21,6 +22,8 @@ import (
 )
 
 const password = "s3cret"
+
+var evidenceN int
 
 var (
 	buildOnce sync.Once
@@ -179,7 +182,13 @@ type runOptions struct {
 // runFlow runs `sleuth run` on testdata/<flow>.flow.yaml and parses the evidence it wrote.
 func runFlow(t *testing.T, flow string, parallel int, o runOptions) *result {
 	t.Helper()
-	dir := workdir(t)
+	return runFlowIn(t, workdir(t), flow, parallel, o)
+}
+
+// runFlowIn is runFlow in a given working directory, so several runs can share files such as
+// a snapshot. Each run still writes its own evidence file.
+func runFlowIn(t *testing.T, dir, flow string, parallel int, o runOptions) *result {
+	t.Helper()
 	base := o.baseURL
 	if base == "" {
 		base = startService(t)
@@ -192,7 +201,8 @@ func runFlow(t *testing.T, flow string, parallel int, o runOptions) *result {
 	if !o.noSecret {
 		env = append(env, "APP_PASSWORD="+password)
 	}
-	evidence := filepath.Join(dir, "evidence.json")
+	evidenceN++
+	evidence := filepath.Join(dir, fmt.Sprintf("evidence-%d.json", evidenceN))
 	args := []string{"run", "-env", envFile, "-out", evidence, "-parallel", itoa(parallel)}
 	args = append(args, o.args...)
 	args = append(args, flow+".flow.yaml")

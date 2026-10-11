@@ -3,18 +3,27 @@ package runner
 
 import (
 	"fmt"
+	"sort"
 	"time"
 
 	"assay/internal/flow"
+	"assay/internal/registry"
 	"assay/internal/report"
 )
 
 type Options struct {
 	EnvName string
+	// Parallel is the maximum number of independent nodes run at once; 0 or 1 is serial.
+	Parallel int
 }
 
 // Run executes the flow. It returns an error only for setup problems
 // (bad env, missing secrets); node failures are recorded in the report.
+//
+// A node starts when everything it depends on (needs: plus nodes.<id> references) has
+// finished; it runs only if all of those passed, otherwise it is skipped. Among ready
+// nodes the earliest in flow order goes first, so with Parallel <= 1 execution is
+// exactly the serial order. Evidence lists steps in that order whatever the timing.
 func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, error) {
 	order, err := f.Order()
 	if err != nil {
@@ -28,56 +37,128 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	if err != nil {
 		return nil, nil, err
 	}
-	conns := newDBConns()
+	workers := opts.Parallel
+	if workers < 1 {
+		workers = 1
+	}
+	conns := newDBConns(workers)
 	defer conns.close()
 	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
-	status := map[string]string{}
+	if workers > 1 {
+		run.Parallel = workers
+	}
 
-	for _, n := range order {
-		step := report.Step{ID: n.ID, Kind: n.Kind, StartedAt: time.Now().UTC()}
-		var blocked string
+	pos := map[string]int{}
+	for i, n := range order {
+		pos[n.ID] = i
+	}
+	deps := make([][]int, len(order))
+	pending := make([]int, len(order))
+	dependents := make([][]int, len(order))
+	for i, n := range order {
 		for _, d := range n.Deps() {
-			if status[d] != report.Passed {
-				blocked = d
-				break
+			deps[i] = append(deps[i], pos[d])
+			dependents[pos[d]] = append(dependents[pos[d]], i)
+		}
+		pending[i] = len(deps[i])
+	}
+
+	steps := make([]report.Step, len(order))
+	jobs := make(chan int, len(order))
+	done := make(chan int, len(order))
+	for w := 0; w < workers; w++ {
+		go func() {
+			for i := range jobs {
+				steps[i] = execNode(ctx, env, conns, order[i], specs)
+				done <- i
+			}
+		}()
+	}
+
+	// Everything below runs on this goroutine. A worker's write to steps[i] happens
+	// before its send on done, which happens before the read here.
+	var ready []int // positions, ascending
+	finished := 0
+	var finish, resolve func(i int)
+	resolve = func(i int) {
+		for _, d := range deps[i] {
+			if steps[d].Status != report.Passed {
+				steps[i] = report.Step{
+					ID: order[i].ID, Kind: order[i].Kind, StartedAt: time.Now().UTC(), Status: report.Skipped,
+					Error: fmt.Sprintf("skipped: dependency %q did not pass", order[d].ID),
+				}
+				finish(i)
+				return
 			}
 		}
-		if blocked != "" {
-			step.Status = report.Skipped
-			step.Error = fmt.Sprintf("skipped: dependency %q did not pass", blocked)
-		} else {
-			start := time.Now()
-			var out map[string]any
-			var err error
-			switch n.Kind {
-			case flow.KindRequest:
-				out, err = execRequest(ctx, n, &step, specs)
-			case flow.KindPoll:
-				out, err = execPoll(ctx, env, conns, n, &step, specs)
-			case flow.KindDB:
-				out, err = execDB(ctx, env, conns, n, &step)
-			case flow.KindAssertion:
-				out, err = execAssertion(ctx, n, &step)
-			case flow.KindTransform:
-				out, err = execTransform(ctx, n, &step)
-			}
-			step.DurationMs = time.Since(start).Milliseconds()
-			if err != nil {
-				step.Status = report.Failed
-				step.Error = err.Error()
-				step.ErrorKind = kindOf(err)
-			} else {
-				step.Status = report.Passed
-				ctx.SetNode(n.ID, out)
-			}
-		}
-		status[n.ID] = step.Status
-		if step.Status == report.Failed {
+		at := sort.SearchInts(ready, i)
+		ready = append(ready, 0)
+		copy(ready[at+1:], ready[at:])
+		ready[at] = i
+	}
+	finish = func(i int) {
+		finished++
+		if steps[i].Status == report.Failed {
 			run.Status = report.Failed
 		}
-		run.Steps = append(run.Steps, step)
+		for _, j := range dependents[i] {
+			if pending[j]--; pending[j] == 0 {
+				resolve(j)
+			}
+		}
 	}
+	for i := range order {
+		if pending[i] == 0 {
+			resolve(i)
+		}
+	}
+	inflight := 0
+	for finished < len(order) {
+		for inflight < workers && len(ready) > 0 {
+			jobs <- ready[0]
+			ready = ready[1:]
+			inflight++
+		}
+		if inflight == 0 {
+			break // unreachable: Order() rejected cycles
+		}
+		finish(<-done)
+		inflight--
+	}
+	close(jobs)
+
+	run.Steps = steps
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
 	return run, secrets, nil
+}
+
+// execNode runs one node whose dependencies all passed and records its evidence.
+func execNode(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, specs map[string]*registry.Spec) report.Step {
+	step := report.Step{ID: n.ID, Kind: n.Kind, StartedAt: time.Now().UTC()}
+	start := time.Now()
+	var out map[string]any
+	var err error
+	switch n.Kind {
+	case flow.KindRequest:
+		out, err = execRequest(ctx, n, &step, specs)
+	case flow.KindPoll:
+		out, err = execPoll(ctx, env, conns, n, &step, specs)
+	case flow.KindDB:
+		out, err = execDB(ctx, env, conns, n, &step)
+	case flow.KindAssertion:
+		out, err = execAssertion(ctx, n, &step)
+	case flow.KindTransform:
+		out, err = execTransform(ctx, n, &step)
+	}
+	step.DurationMs = time.Since(start).Milliseconds()
+	if err != nil {
+		step.Status = report.Failed
+		step.Error = err.Error()
+		step.ErrorKind = kindOf(err)
+	} else {
+		step.Status = report.Passed
+		ctx.SetNode(n.ID, out)
+	}
+	return step
 }

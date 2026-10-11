@@ -38,7 +38,8 @@ func run(args []string) int {
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
 	outPath := fs.String("out", "", "evidence JSON path (default evidence/<flow>-<timestamp>.json)")
-	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 {
+	parallel := fs.Int("parallel", 1, "run up to N independent nodes at once (order is set by needs: and nodes.<id> references only)")
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 {
 		fmt.Fprintf(os.Stderr, "usage: assay %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
@@ -55,6 +56,9 @@ func run(args []string) int {
 			ids[i] = n.ID
 		}
 		fmt.Printf("OK: %s (%s)\n", f.Name, strings.Join(ids, " -> "))
+		if *parallel > 1 {
+			printWaves(f, *parallel)
+		}
 		return 0
 	case "run":
 		env, err := runner.LoadEnv(*envPath)
@@ -62,7 +66,7 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 2
 		}
-		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath))})
+		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath)), Parallel: *parallel})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 2
@@ -85,6 +89,30 @@ func run(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 	return 2
+}
+
+// printWaves shows what --parallel would run together, so a missing needs: shows up
+// before a run rather than as a flaky one.
+func printWaves(f *flow.Flow, n int) {
+	waves, err := f.Waves()
+	if err != nil {
+		return
+	}
+	together := false
+	for _, w := range waves {
+		if len(w) > 1 {
+			together = true
+		}
+	}
+	if !together {
+		fmt.Printf("parallel (up to %d): nothing to overlap, every node depends on the one before it\n", n)
+		return
+	}
+	fmt.Printf("parallel (up to %d): nodes in the same wave may run at the same time\n", n)
+	for i, w := range waves {
+		fmt.Printf("  wave %d: %s\n", i+1, strings.Join(w, ", "))
+	}
+	fmt.Println("  anything that must run before another node needs `needs:` (or a nodes.<id> reference)")
 }
 
 func exitCode(r *report.Run) int {

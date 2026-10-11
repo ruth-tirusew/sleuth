@@ -3,6 +3,8 @@ package runner
 import (
 	"errors"
 	"fmt"
+	"math"
+	"math/rand"
 	"time"
 
 	"assay/internal/flow"
@@ -187,16 +189,44 @@ func execPoll(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, step *r
 			out["attempts"] = float64(i)
 			return out, nil
 		}
-		if time.Until(deadline) <= interval {
+		remaining = time.Until(deadline)
+		if remaining <= interval {
 			break
 		}
-		time.Sleep(interval)
+		delay := nextDelay(p.Backoff, interval, i, rand.Float64())
+		if delay > interval && delay > remaining-interval {
+			delay = remaining - interval // keep room for one last attempt
+		}
+		res.History[len(res.History)-1].DelayMs = delay.Milliseconds()
+		time.Sleep(delay)
 	}
 
 	if lastErr != nil { // the final attempt got no usable answer
 		return nil, transportErr(fmt.Errorf("poll gave up after %d attempt(s) in %s: %w", res.Attempts, timeout, lastErr))
 	}
 	return nil, timeoutErr(fmt.Errorf("condition not met after %d attempt(s) in %s", res.Attempts, timeout))
+}
+
+// nextDelay is the wait after attempt i (1-based). rnd in [0,1) drives the jitter.
+func nextDelay(b *flow.Backoff, interval time.Duration, i int, rnd float64) time.Duration {
+	if b == nil {
+		return interval
+	}
+	factor := b.Factor
+	if factor == 0 {
+		factor = 2
+	}
+	d := float64(interval) * math.Pow(factor, float64(i-1))
+	if b.Max != "" {
+		if max, err := time.ParseDuration(b.Max); err == nil && d > float64(max) {
+			d = float64(max)
+		}
+	}
+	d *= 1 + b.Jitter*(2*rnd-1)
+	if d < 1 {
+		d = 1
+	}
+	return time.Duration(d)
 }
 
 func minDuration(a, b time.Duration) time.Duration {

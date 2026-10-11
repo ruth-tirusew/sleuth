@@ -8,6 +8,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"text/template"
 
 	"gopkg.in/yaml.v3"
@@ -106,6 +107,7 @@ func (c *EnvConfig) ContractLocation(source string) (string, error) {
 
 // Context is the run context: env, secrets and the outputs of completed nodes.
 type Context struct {
+	mu   sync.RWMutex // nodes may run concurrently; guards data
 	data map[string]any
 }
 
@@ -126,17 +128,25 @@ func NewContext(env *EnvConfig) (*Context, []string, error) {
 			secretValues = append(secretValues, v)
 		}
 	}
-	return &Context{data: map[string]any{
+	c := &Context{data: map[string]any{
 		"env": vars, "secrets": secrets, "nodes": map[string]any{},
-	}}, secretValues, nil
+	}}
+	return c, secretValues, nil
 }
 
+// SetNode publishes a node's output. Outputs are treated as immutable once set.
 func (c *Context) SetNode(id string, out map[string]any) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.data["nodes"].(map[string]any)[id] = out
 }
 
 // Lookup resolves a dotted path (map keys and numeric list indices).
-func (c *Context) Lookup(path string) (any, bool) { return lookup(c.data, path) }
+func (c *Context) Lookup(path string) (any, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return lookup(c.data, path)
+}
 
 func lookup(root any, path string) (any, bool) {
 	path = strings.TrimPrefix(path, ".")
@@ -187,7 +197,10 @@ func (c *Context) Render(v any) (any, error) {
 			return nil, err
 		}
 		var buf bytes.Buffer
-		if err := tpl.Execute(&buf, c.data); err != nil {
+		c.mu.RLock()
+		err = tpl.Execute(&buf, c.data)
+		c.mu.RUnlock()
+		if err != nil {
 			return nil, fmt.Errorf("template %q: %w", t, err)
 		}
 		return buf.String(), nil

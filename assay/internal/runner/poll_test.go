@@ -4,10 +4,12 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"assay/internal/flow"
 	"assay/internal/report"
 )
 
@@ -219,5 +221,47 @@ nodes:
 `, func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hits, 1) })
 	if w := step(r, "wait"); w.ErrorKind != KindContract || atomic.LoadInt32(&hits) > 1 {
 		t.Fatalf("hits=%d %+v", hits, w)
+	}
+}
+
+func TestNextDelay(t *testing.T) {
+	i := 100 * time.Millisecond
+	if nextDelay(nil, i, 5, 0.5) != i {
+		t.Fatal("no backoff means a fixed interval")
+	}
+	b := &flow.Backoff{Max: "500ms"} // factor defaults to 2
+	for n, want := range []time.Duration{100, 200, 400, 500, 500} {
+		if got := nextDelay(b, i, n+1, 0.5); got != want*time.Millisecond {
+			t.Fatalf("attempt %d: %v want %v", n+1, got, want*time.Millisecond)
+		}
+	}
+	j := &flow.Backoff{Factor: 1, Jitter: 0.2}
+	if lo, hi := nextDelay(j, i, 1, 0), nextDelay(j, i, 1, 0.999); lo != 80*time.Millisecond || hi < 119*time.Millisecond || hi > 120*time.Millisecond {
+		t.Fatalf("jitter range: %v..%v", lo, hi)
+	}
+}
+
+func TestPollBackoffRecordsDelaysAndStillSucceeds(t *testing.T) {
+	srv, _ := asyncServer(4)
+	defer srv.Close()
+	r := runYAML(t, srv.URL, strings.Replace(fmt.Sprintf(pollFlow, "5s"), "      request:", "      backoff: {factor: 2}\n      request:", 1))
+	w := step(r, "wait")
+	if w.Status != report.Passed || w.Poll.Attempts != 4 {
+		t.Fatalf("%+v %+v", w, w.Poll)
+	}
+	h := w.Poll.History
+	if h[0].DelayMs != 20 || h[1].DelayMs != 40 || h[2].DelayMs != 80 || h[3].DelayMs != 0 {
+		t.Fatalf("delays: %+v", h)
+	}
+}
+
+func TestPollBackoffLeavesRoomForALastAttempt(t *testing.T) {
+	srv, calls := asyncServer(1 << 30)
+	defer srv.Close()
+	y := strings.Replace(fmt.Sprintf(pollFlow, "300ms"), "      request:", "      backoff: {factor: 10}\n      request:", 1)
+	start := time.Now()
+	r := runYAML(t, srv.URL, y)
+	if w := step(r, "wait"); w.ErrorKind != KindTimeout || time.Since(start) > time.Second || *calls < 2 {
+		t.Fatalf("calls=%d %+v", *calls, w)
 	}
 }

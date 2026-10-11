@@ -145,3 +145,31 @@ func TestJSONSchemaPickIsDeterministic(t *testing.T) {
 		t.Fatalf("want sorted +json fallback, got %v", sc)
 	}
 }
+
+func TestFindStripsServerBasePath(t *testing.T) {
+	s := loadDoc(t, `{"openapi":"3.1.0",
+	 "servers":[{"url":"https://api.example.com/{ver}/","variables":{"ver":{"default":"api/v1"}}},{"url":"/legacy"}],
+	 "paths":{"/users/{id}":{"get":{"responses":{"200":{}}}},"/legacy/users/{id}":{"get":{"responses":{"200":{}}}}}}`)
+	for _, p := range []string{"/api/v1/users/3", "/users/3", "/legacy/users/3"} {
+		if op, ok := s.Find("GET", p); !ok || op.Key != "GET /users/{id}" && p != "/legacy/users/3" {
+			t.Fatalf("%s: %+v %v", p, op, ok)
+		}
+	}
+	// the stripped match wins over a bare path template that happens to match too
+	if op, _ := s.Find("GET", "/legacy/users/3"); op.Key != "GET /users/{id}" {
+		t.Fatalf("server prefix should win: %s", op.Key)
+	}
+	if _, ok := s.Find("GET", "/apix/users/3"); ok {
+		t.Fatal("prefix must match on a segment boundary")
+	}
+}
+
+func TestNonJSONContentIsRecorded(t *testing.T) {
+	s := loadDoc(t, `{"openapi":"3.1.0","paths":{"/x":{"post":{
+	  "requestBody":{"content":{"application/xml":{"schema":{"type":"object"}}}},
+	  "responses":{"200":{"content":{"text/plain":{"schema":{"type":"string"}}}},"204":{}}}}}}`)
+	op, _ := s.Find("POST", "/x")
+	if len(op.RequestOther) != 1 || op.RequestOther[0] != "application/xml" || op.ResponseOther["200"][0] != "text/plain" || op.ResponseOther["204"] != nil {
+		t.Fatalf("%+v", op)
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -32,6 +33,9 @@ type Operation struct {
 	RequestRequired bool
 	Responses       map[string]any    // status ("200", "2XX", "default") -> schema (may be nil)
 	ResponsePtrs    map[string]string // same keys -> location in the document
+	// Content types documented without a JSON schema (xml, text, form...), which cannot be validated.
+	RequestOther  []string
+	ResponseOther map[string][]string // status -> content types
 
 	method, path string // lower-case method and path template, for Details
 }
@@ -116,6 +120,68 @@ func upgradeNullable(v any) {
 // Find matches a concrete request path against the spec's path templates.
 // Literal paths beat templated ones (/users/me over /users/{id}).
 func (s *Spec) Find(method, urlPath string) (*Operation, bool) {
+	// A documented server base path (servers: [{url: /api/v1}]) is not part of the path
+	// templates, so try the path with each prefix stripped before the bare path.
+	for _, pre := range s.serverPrefixes() {
+		if rest, ok := stripPrefix(urlPath, pre); ok {
+			if op, found := s.find(method, rest); found {
+				return op, true
+			}
+		}
+	}
+	return s.find(method, urlPath)
+}
+
+var serverVarRe = regexp.MustCompile(`\{([^}]+)\}`)
+
+// serverPrefixes returns the path component of each `servers[].url`, with server
+// variables replaced by their defaults. Root and empty paths are dropped.
+func (s *Spec) serverPrefixes() []string {
+	servers, _ := s.doc["servers"].([]any)
+	var out []string
+	for _, sv := range servers {
+		m, _ := sv.(map[string]any)
+		raw, _ := m["url"].(string)
+		vars, _ := m["variables"].(map[string]any)
+		raw = serverVarRe.ReplaceAllStringFunc(raw, func(v string) string {
+			name := v[1 : len(v)-1]
+			if def, ok := vars[name].(map[string]any); ok {
+				if d, ok := def["default"].(string); ok {
+					return d
+				}
+			}
+			return v
+		})
+		path := raw
+		if i := strings.Index(raw, "://"); i >= 0 {
+			rest := raw[i+3:]
+			if j := strings.Index(rest, "/"); j >= 0 {
+				path = rest[j:]
+			} else {
+				path = ""
+			}
+		}
+		path = "/" + strings.Trim(path, "/")
+		if path != "/" {
+			out = append(out, path)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool { return len(out[i]) > len(out[j]) }) // longest first
+	return out
+}
+
+// stripPrefix removes prefix from p at a segment boundary.
+func stripPrefix(p, prefix string) (string, bool) {
+	if p == prefix {
+		return "/", true
+	}
+	if strings.HasPrefix(p, prefix+"/") {
+		return p[len(prefix):], true
+	}
+	return "", false
+}
+
+func (s *Spec) find(method, urlPath string) (*Operation, bool) {
 	method = strings.ToLower(method)
 	paths := s.doc["paths"].(map[string]any)
 	keys := make([]string, 0, len(paths))
@@ -195,12 +261,23 @@ func (s *Spec) operation(key, base string, op map[string]any) *Operation {
 		rb, ptr := s.deref(rb, base+"/requestBody")
 		o.RequestRequired, _ = rb["required"].(bool)
 		o.RequestSchema, o.RequestPtr = jsonSchema(rb, ptr)
+		if o.RequestSchema == nil {
+			o.RequestOther = otherContentTypes(rb)
+		}
 	}
 	resps, _ := op["responses"].(map[string]any)
 	for status, r := range resps {
 		rm, _ := r.(map[string]any)
 		rm, ptr := s.deref(rm, base+"/responses/"+status)
 		o.Responses[status], o.ResponsePtrs[status] = jsonSchema(rm, ptr)
+		if o.Responses[status] == nil {
+			if other := otherContentTypes(rm); len(other) > 0 {
+				if o.ResponseOther == nil {
+					o.ResponseOther = map[string][]string{}
+				}
+				o.ResponseOther[status] = other
+			}
+		}
 	}
 	return o
 }
@@ -230,6 +307,18 @@ func jsonSchema(obj map[string]any, ptr string) (any, string) {
 		}
 	}
 	return nil, ""
+}
+
+// otherContentTypes lists the documented content types of a body (sorted), for bodies
+// that have no JSON schema.
+func otherContentTypes(obj map[string]any) []string {
+	content, _ := obj["content"].(map[string]any)
+	var out []string
+	for mt := range content {
+		out = append(out, mt)
+	}
+	sort.Strings(out)
+	return out
 }
 
 func ptrEsc(s string) string { return strings.NewReplacer("~", "~0", "/", "~1").Replace(s) }

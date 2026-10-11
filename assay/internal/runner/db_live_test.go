@@ -50,10 +50,13 @@ func TestLivePGPollAndConnectionReuse(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer admin.Exec(bg, "DROP TABLE IF EXISTS assay_poll_probe")
+	inserted := make(chan struct{})
 	go func() { // the "async work": a row appears a moment after the poll starts
+		defer close(inserted)
 		time.Sleep(450 * time.Millisecond)
 		admin.Exec(bg, "INSERT INTO assay_poll_probe VALUES (7, 'SETTLED')")
 	}()
+	defer func() { <-inserted }() // the connection is not safe to share with the deferred cleanup above
 
 	r := runDBs(t, map[string]string{"main": dsn}, `
 version: 1
@@ -266,5 +269,69 @@ nodes:
 	}
 	if ev := step(r, "active").DB; ev == nil || ev.Type != "mongo" || ev.RowCount != 2 || !strings.HasPrefix(ev.Query, "find assay_scratch.loans") {
 		t.Errorf("evidence: %+v", ev)
+	}
+}
+
+// Parallel db nodes need their own pooled connections: a single pgx connection is not
+// safe for concurrent use. Four 300ms queries on one named database must overlap.
+// ASSAY_TEST_PG_DSN=postgres://.../scratch go test -race ./internal/runner -run LivePGParallel
+func TestLivePGParallelNodesUsePooledConnections(t *testing.T) {
+	dsn := os.Getenv("ASSAY_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("ASSAY_TEST_PG_DSN not set")
+	}
+	var b strings.Builder
+	b.WriteString("version: 1\nname: t\nnodes:\n")
+	for i := 0; i < 4; i++ {
+		fmt.Fprintf(&b, "  - id: q%d\n    kind: db\n    db: {connection: main, query: \"SELECT %d AS n, pg_sleep(0.3)\"}\n    assert: [{path: nodes.q%d.row_count, equals: 1}]\n", i, i, i)
+	}
+	p := t.TempDir() + "/f.yaml"
+	os.WriteFile(p, []byte(b.String()), 0o644)
+	f, err := flow.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	r, _, err := Run(f, &EnvConfig{Databases: map[string]string{"main": dsn}}, Options{Parallel: 4})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != report.Passed || time.Since(start) > 900*time.Millisecond {
+		t.Fatalf("%s in %v: %+v", r.Status, time.Since(start), r.Steps)
+	}
+}
+
+// A pooled connection that died between nodes (server restart, idle timeout) must be
+// discarded and the query retried once on a fresh one, not reported as an outage.
+func TestLivePGPoolRecoversFromKilledConnections(t *testing.T) {
+	dsn := os.Getenv("ASSAY_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("ASSAY_TEST_PG_DSN not set")
+	}
+	bg := context.Background()
+	admin, err := pgx.Connect(bg, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer admin.Close(bg)
+
+	env := &EnvConfig{Databases: map[string]string{"main": dsn + "&application_name=assay_kill_probe"}}
+	ctx, _, err := NewContext(env)
+	if err != nil {
+		t.Fatal(err)
+	}
+	conns := newDBConns(2)
+	defer conns.close()
+	q := &flow.DB{Connection: "main", Query: "SELECT 1 AS n"}
+	if _, err := queryDB(ctx, env, conns, q, &report.Step{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := admin.Exec(bg, "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name = 'assay_kill_probe'"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(100 * time.Millisecond)
+	rows, err := queryDB(ctx, env, conns, q, &report.Step{})
+	if err != nil || len(rows) != 1 {
+		t.Fatalf("expected recovery on a fresh connection: rows=%v err=%v", rows, err)
 	}
 }

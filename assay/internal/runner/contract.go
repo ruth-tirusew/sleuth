@@ -85,7 +85,14 @@ func (c *contractRun) err(stage string) error {
 }
 
 func (c *contractRun) checkRequest(body any) {
-	if c.op == nil || c.op.RequestSchema == nil {
+	if c.op == nil {
+		return
+	}
+	if c.op.RequestSchema == nil {
+		if body != nil && len(c.op.RequestOther) > 0 {
+			c.res.Notes = append(c.res.Notes, fmt.Sprintf("contract documents %s only for the %s request body; not validated",
+				strings.Join(c.op.RequestOther, ", "), c.op.Key))
+		}
 		return
 	}
 	if body == nil {
@@ -123,6 +130,11 @@ func (c *contractRun) checkResponse(status int, body any) {
 			strconv.Itoa(status), c.op.Key, strings.Join(keys, ", ")))
 		return
 	}
+	if other := c.op.ResponseOther[matchedStatus(c.op, status)]; schema == nil && len(other) > 0 {
+		c.res.Notes = append(c.res.Notes, fmt.Sprintf("contract documents %s only for %s %d; response body not validated",
+			strings.Join(other, ", "), c.op.Key, status))
+		return
+	}
 	if schema == nil || isEmptySchema(schema) {
 		c.res.Notes = append(c.res.Notes, fmt.Sprintf("contract has no schema for %s %d; response body not validated", c.op.Key, status))
 		return
@@ -132,6 +144,17 @@ func (c *contractRun) checkResponse(status int, body any) {
 		return
 	}
 	c.validate("response", c.op.ResponsePtrFor(status), body)
+}
+
+// matchedStatus is the Responses key ResponseFor would use for a status.
+func matchedStatus(o *registry.Operation, status int) string {
+	s := strconv.Itoa(status)
+	for _, k := range []string{s, s[:1] + "XX", "default"} {
+		if _, ok := o.Responses[k]; ok {
+			return k
+		}
+	}
+	return ""
 }
 
 const undocumentedFmt = "status %s is not documented for %s (documented: %s)"

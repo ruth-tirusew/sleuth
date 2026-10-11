@@ -332,3 +332,28 @@ func TestRelativeContractPathIsRelativeToEnvFile(t *testing.T) {
 		t.Fatalf("%q", loc)
 	}
 }
+
+func TestContractNotesNonJSONBodies(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte("hello")) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	os.WriteFile(dir+"/spec.json", []byte(`{"openapi":"3.1.0","servers":[{"url":"/api"}],"paths":{"/t":{"get":{"responses":{"200":{"content":{"text/plain":{"schema":{"type":"string"}}}}}}}}}`), 0o644)
+	os.WriteFile(dir+"/f.yaml", []byte(`
+version: 1
+name: t
+nodes:
+  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/api/t"}}
+`), 0o644)
+	f, err := flow.Load(dir + "/f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, _, err := Run(f, &EnvConfig{Vars: map[string]string{"base": srv.URL}, Contracts: map[string]string{"api": dir + "/spec.json"}}, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := step(r, "a")
+	if a.Status != report.Passed || len(a.Contract.Notes) != 1 || !strings.Contains(a.Contract.Notes[0], "text/plain") || a.Contract.Operation != "GET /t" {
+		t.Fatalf("%+v %+v", a, a.Contract)
+	}
+}

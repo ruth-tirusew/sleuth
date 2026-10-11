@@ -22,6 +22,7 @@ type Run struct {
 	Status     string    `json:"status"`
 	StartedAt  time.Time `json:"started_at"`
 	DurationMs int64     `json:"duration_ms"`
+	Parallel   int       `json:"parallel,omitempty"` // max nodes run at once; absent when serial
 	Steps      []Step    `json:"steps"`
 	// Drift summarises contract disagreements across the run; absent when no step used a contract.
 	Drift *DriftSummary `json:"drift,omitempty"`
@@ -88,6 +89,7 @@ type PollAttempt struct {
 	RowCount  int    `json:"row_count,omitempty"` // db polls: rows returned
 	Passed    bool   `json:"passed"`
 	Error     string `json:"error,omitempty"`
+	DelayMs   int64  `json:"delay_ms,omitempty"` // wait before the next attempt
 }
 
 type HTTPRequest struct {

@@ -133,6 +133,26 @@
               "type": "string",
               "pattern": "^[0-9]+(ms|s|m)$"
             },
+            "backoff": {
+              "type": "object",
+              "additionalProperties": false,
+              "description": "Grow the delay between attempts: interval * factor^(attempt-1), capped at max, spread by +/- jitter.",
+              "properties": {
+                "factor": {
+                  "type": "number",
+                  "minimum": 1
+                },
+                "max": {
+                  "type": "string",
+                  "pattern": "^[0-9]+(ms|s|m)$"
+                },
+                "jitter": {
+                  "type": "number",
+                  "minimum": 0,
+                  "maximum": 1
+                }
+              }
+            },
             "db": {
               "$ref": "#/$defs/db"
             }

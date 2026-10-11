@@ -91,6 +91,16 @@ type Poll struct {
 	// Interval between attempts (default 1s) and Timeout for the whole poll (default 30s).
 	Interval string `yaml:"interval,omitempty" json:"interval,omitempty"`
 	Timeout  string `yaml:"timeout,omitempty" json:"timeout,omitempty"`
+	// Backoff optionally grows the delay between attempts. Without it the interval is fixed.
+	Backoff *Backoff `yaml:"backoff,omitempty" json:"backoff,omitempty"`
+}
+
+// Backoff grows a poll's delay: attempt k waits interval * factor^(k-1), capped at Max,
+// then spread by +/- Jitter (a fraction, 0.2 = 20%) so parallel pollers don't synchronise.
+type Backoff struct {
+	Factor float64 `yaml:"factor,omitempty" json:"factor,omitempty"` // >= 1; default 2
+	Max    string  `yaml:"max,omitempty" json:"max,omitempty"`       // delay cap; default none
+	Jitter float64 `yaml:"jitter,omitempty" json:"jitter,omitempty"` // 0..1; default 0
 }
 
 // DB runs a read-only query against a database named under `databases:` in the env file.
@@ -261,6 +271,19 @@ func (f *Flow) Validate() error {
 					return fmt.Errorf("node %s: bad poll duration %q", n.ID, d)
 				}
 			}
+			if b := n.Poll.Backoff; b != nil {
+				if b.Factor != 0 && b.Factor < 1 {
+					return fmt.Errorf("node %s: poll.backoff.factor must be >= 1", n.ID)
+				}
+				if b.Jitter < 0 || b.Jitter > 1 {
+					return fmt.Errorf("node %s: poll.backoff.jitter must be between 0 and 1", n.ID)
+				}
+				if b.Max != "" {
+					if d, err := time.ParseDuration(b.Max); err != nil || d <= 0 {
+						return fmt.Errorf("node %s: bad poll.backoff.max %q", n.ID, b.Max)
+					}
+				}
+			}
 			if n.Contract != nil && n.Poll.Request == nil {
 				return fmt.Errorf("node %s: contract on a poll node needs poll.request (db polls have no contract)", n.ID)
 			}
@@ -341,4 +364,29 @@ func (f *Flow) Order() ([]Node, error) {
 		}
 	}
 	return out, nil
+}
+
+// Waves groups nodes by dependency depth: every node in a wave depends only on earlier
+// waves, so the nodes of one wave are independent of each other and may run together.
+func (f *Flow) Waves() ([][]string, error) {
+	order, err := f.Order()
+	if err != nil {
+		return nil, err
+	}
+	level := map[string]int{}
+	var waves [][]string
+	for _, n := range order {
+		l := 0
+		for _, d := range n.Deps() {
+			if level[d]+1 > l {
+				l = level[d] + 1
+			}
+		}
+		level[n.ID] = l
+		for len(waves) <= l {
+			waves = append(waves, nil)
+		}
+		waves[l] = append(waves[l], n.ID)
+	}
+	return waves, nil
 }

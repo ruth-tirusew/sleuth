@@ -20,8 +20,8 @@ Commands:
 
 | Command | Purpose |
 |---|---|
-| `assay validate <flow>` | Check a flow and print its execution order |
-| `assay run [-env env.yaml] [-out evidence.json] <flow>` | Run a flow |
+| `assay validate [--parallel N] <flow>` | Check a flow and print its execution order; with `--parallel`, also which nodes would run together |
+| `assay run [-env env.yaml] [-out evidence.json] [--parallel N] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1) |
 | `assay scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
 
 ## Writing a flow
@@ -109,6 +109,7 @@ Repeat a request or a database query until a condition holds, for asynchronous w
       kind: poll
       poll:
         interval: 2s                       # default 1s
+        backoff: {factor: 2, max: 10s, jitter: 0.2}   # optional: delay = interval * factor^(n-1), capped, +/- jitter
         timeout: 60s                       # default 30s, for the whole poll
         request:                           # or `db:` to poll a query
           url: "{{ .env.base_url }}/jobs/{{ .nodes.start.out.id }}"
@@ -243,10 +244,26 @@ Layout:
     docs/decisions/     design decisions
     .github/workflows/  a manually triggered workflow that runs a flow headless
 
+## Parallel execution
+
+`--parallel N` runs up to N independent nodes at once. A node starts when everything it depends on (`needs:` plus any
+`nodes.<id>` it references) has finished, and runs only if all of that passed; a failure skips just its dependents,
+and unrelated branches carry on. Evidence lists steps in flow order whatever the timing, and each step's `started_at`
+and `duration_ms` show the overlap.
+
+**File order is no longer an ordering guarantee.** With `--parallel 1` (the default) nodes run in flow order, so a flow
+that relies on that without declaring `needs:` still works. With `--parallel 4` it may not: if one node must finish
+before another (reset data, then call the API), say so with `needs:`. `assay validate --parallel 4 flow.yaml`
+lists the waves of nodes that would run together, so a missing `needs:` shows up before a run. Postgres nodes share a
+connection pool sized to N. See [`docs/decisions/0004-parallel-execution.md`](docs/decisions/0004-parallel-execution.md).
+
 ## Limitations
 
 - Postgres is the only SQL database supported.
-- No parallel execution of independent nodes, and no poll backoff (the interval is fixed).
+- Parallel execution (`--parallel N`) is opt-in, and only `needs:` and `nodes.<id>` references order nodes. See below.
 - `contract:` works on poll nodes that poll a request, not on db polls.
 - Secrets come from environment variables only; there is no vault integration.
-- Only `application/json` bodies are validated against contracts, and OpenAPI `servers` base paths are ignored.
+- Only `application/json` (and `+json`) bodies are validated against contracts. A body documented only as another type
+  (XML, text, form) is recorded as a note on the step, not validated.
+- OpenAPI `servers` base paths (`/api/v1`, with variable defaults) are stripped when matching a call to an operation;
+  a request made through a path the spec never mentions still matches as-is.

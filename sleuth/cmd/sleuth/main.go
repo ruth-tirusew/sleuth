@@ -11,6 +11,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
@@ -32,7 +33,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: sleuth <run|validate|scaffold|serve|diff> [flags] ...")
+		fmt.Fprintln(os.Stderr, "usage: sleuth <run|validate|scaffold|serve|diff|snapshot> [flags] ...")
 		return 2
 	}
 	cmd := args[0]
@@ -45,11 +46,15 @@ func run(args []string) int {
 	if cmd == "diff" {
 		return diffSpecs(args[1:])
 	}
+	if cmd == "snapshot" {
+		return snapshotSpec(args[1:])
+	}
 	fs := flag.NewFlagSet(cmd, flag.ContinueOnError)
 	envPath := fs.String("env", "", "environment config file (vars + secret names)")
 	outPath := fs.String("out", "", "evidence JSON path (default evidence/<flow>-<timestamp>.json)")
 	parallel := fs.Int("parallel", 1, "run up to N independent nodes at once (order is set by needs: and nodes.<id> references only)")
-	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 {
+	specFail := fs.String("spec-drift-fail", "", "fail when a contract source differs from its saved baseline by at least this severity: breaking | review (default: report only)")
+	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") {
 		fmt.Fprintf(os.Stderr, "usage: sleuth %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
@@ -76,7 +81,7 @@ func run(args []string) int {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 2
 		}
-		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath)), Parallel: *parallel})
+		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath)), Parallel: *parallel, FailOnSpecDrift: *specFail})
 		if err != nil {
 			fmt.Fprintln(os.Stderr, "error:", err)
 			return 2
@@ -99,6 +104,86 @@ func run(args []string) int {
 	}
 	fmt.Fprintf(os.Stderr, "unknown command %q\n", cmd)
 	return 2
+}
+
+// snapshotSpec saves the live OpenAPI document of a contract source as its baseline, so later runs can
+// report what changed since: sleuth snapshot -env e.yaml -source NAME [-out file] [-force]
+func snapshotSpec(args []string) int {
+	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
+	envPath := fs.String("env", "", "env file whose contracts: names the source")
+	source := fs.String("source", "", "contract source name")
+	out := fs.String("out", "", "where to write it (default: the source's baselines: entry, else baselines/<source>.openapi.json next to the env file)")
+	force := fs.Bool("force", false, "overwrite an existing baseline")
+	if err := fs.Parse(args); err != nil || *envPath == "" || *source == "" || fs.NArg() != 0 {
+		fmt.Fprintln(os.Stderr, "usage: sleuth snapshot -env env.yaml -source NAME [-out file] [-force]")
+		return 2
+	}
+	env, err := runner.LoadEnv(*envPath)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	loc, err := env.ContractLocation(*source)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	configured, err := env.BaselineLocation(*source)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	dest := *out
+	if dest == "" {
+		dest = configured
+	}
+	if dest == "" {
+		dest = filepath.Join(filepath.Dir(*envPath), "baselines", *source+".openapi.json")
+	}
+	raw, err := registry.Fetch(loc)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "error: contract source", *source+":", err)
+		return 2
+	}
+	if _, err := registry.Parse(loc, raw); err != nil { // never save something that is not an OpenAPI document
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if _, err := os.Stat(dest); err == nil && !*force {
+		fmt.Fprintf(os.Stderr, "error: %s already exists. It is what drift is measured against; review `sleuth diff %s %s` first, then pass -force to replace it.\n", dest, dest, loc)
+		return 2
+	}
+	var pretty bytes.Buffer
+	if err := json.Indent(&pretty, raw, "", "  "); err != nil {
+		pretty.Reset()
+		pretty.Write(raw)
+	}
+	pretty.WriteByte('\n')
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	if err := os.WriteFile(dest, pretty.Bytes(), 0o644); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		return 2
+	}
+	fmt.Printf("saved %s (%d operations) to %s\n", *source, len(mustOps(raw, loc)), dest)
+	if configured == "" {
+		rel, relErr := filepath.Rel(filepath.Dir(*envPath), dest)
+		if relErr != nil {
+			rel = dest
+		}
+		fmt.Printf("add to %s so runs compare against it:\n  baselines:\n    %s: %s\n", *envPath, *source, rel)
+	}
+	return 0
+}
+
+func mustOps(raw []byte, loc string) []string {
+	sp, err := registry.Parse(loc, raw)
+	if err != nil {
+		return nil
+	}
+	return sp.Operations()
 }
 
 // diffSpecs compares two versions of a published OpenAPI document and reports what a client
@@ -228,6 +313,13 @@ func printWaves(f *flow.Flow, n int) {
 
 func exitCode(r *report.Run) int {
 	kinds := map[string]bool{}
+	if r.Drift != nil {
+		for _, sd := range r.Drift.SpecDrift {
+			if sd.Failing { // the spec moved under the flow: the same class as a contract failure
+				kinds[runner.KindContract] = true
+			}
+		}
+	}
 	for _, s := range r.Steps {
 		if s.Status == report.Failed {
 			kinds[s.ErrorKind] = true

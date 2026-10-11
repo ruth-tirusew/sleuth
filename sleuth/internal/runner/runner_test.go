@@ -374,3 +374,89 @@ nodes:
 		t.Fatalf("%+v", sc)
 	}
 }
+
+// baselineSpec is fakeSpec as it was when the flow was written: it still has GET /gone, and the
+// user response still carried a "nick" property the live spec has since dropped.
+const baselineSpec = `{"openapi":"3.1.0","paths":{
+ "/users/{id}":{"get":{"responses":{"200":{"content":{"application/json":{"schema":
+    {"type":"object","required":["id","name"],"properties":{"id":{"type":"integer"},"name":{"type":"string"},"nick":{"type":"string"}}}}}}}}},
+ "/users":{"post":{"requestBody":{"required":true,"content":{"application/json":{"schema":
+    {"type":"object","required":["name"],"additionalProperties":false,"properties":{"name":{"type":"string"}}}}}},
+    "responses":{"201":{}}}},
+ "/empty":{"get":{"responses":{"200":{"content":{"application/json":{"schema":{}}}}}}},
+ "/gone":{"get":{"responses":{"200":{}}}}
+}}`
+
+func runWithBaseline(t *testing.T, baseline, failOn string) (*report.Run, error) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":7,"name":"x"}`)) }))
+	defer srv.Close()
+	dir := t.TempDir()
+	os.WriteFile(dir+"/spec.json", []byte(fakeSpec), 0o644)
+	os.WriteFile(dir+"/base.json", []byte(baselineSpec), 0o644)
+	os.WriteFile(dir+"/f.yaml", []byte(`
+version: 1
+name: t
+nodes:
+  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+`), 0o644)
+	f, err := flow.Load(dir + "/f.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	env := &EnvConfig{Vars: map[string]string{"base": srv.URL}, Contracts: map[string]string{"api": dir + "/spec.json"}, path: dir + "/env.yaml"}
+	if baseline != "" {
+		env.Baselines = map[string]string{"api": baseline} // relative: resolved against the env file's directory
+	}
+	r, _, err := Run(f, env, Options{FailOnSpecDrift: failOn})
+	return r, err
+}
+
+func TestRunComparesLiveSpecWithSavedBaseline(t *testing.T) {
+	r, err := runWithBaseline(t, "base.json", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != report.Passed || r.Drift == nil || len(r.Drift.SpecDrift) != 1 {
+		t.Fatalf("report-only drift must not fail the run: %s %+v", r.Status, r.Drift)
+	}
+	sd := r.Drift.SpecDrift[0]
+	if sd.Source != "api" || sd.Breaking != 2 || sd.CalledBreaking != 1 || sd.Failing {
+		t.Fatalf("%+v", sd)
+	}
+	var sawProp, sawGone bool
+	for _, c := range sd.Changes {
+		if c.Operation == "GET /users/{id}" && strings.Contains(c.Message, "property removed") && c.Called {
+			sawProp = true
+		}
+		if c.Operation == "GET /gone" && c.Message == "operation removed" && !c.Called {
+			sawGone = true
+		}
+	}
+	if !sawProp || !sawGone {
+		t.Fatalf("%+v", sd.Changes)
+	}
+}
+
+func TestRunFailsOnSpecDriftWhenAsked(t *testing.T) {
+	r, err := runWithBaseline(t, "base.json", "breaking")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r.Status != report.Failed || !r.Drift.SpecDrift[0].Failing || step(r, "a").Status != report.Passed {
+		t.Fatalf("the step passed but the run must fail on the drifted spec: %s %+v", r.Status, r.Drift.SpecDrift[0])
+	}
+}
+
+func TestRunWithoutBaselineHasNoSpecDrift(t *testing.T) {
+	r, err := runWithBaseline(t, "", "breaking")
+	if err != nil || r.Drift == nil || len(r.Drift.SpecDrift) != 0 || r.Status != report.Passed {
+		t.Fatalf("%v %+v", err, r)
+	}
+}
+
+func TestRunWithUnreadableBaselineIsASetupError(t *testing.T) {
+	if _, err := runWithBaseline(t, "missing-baseline.json", ""); err == nil || !strings.Contains(err.Error(), `baseline for contract source "api"`) {
+		t.Fatalf("a drift check that silently did not run must be an error, got %v", err)
+	}
+}

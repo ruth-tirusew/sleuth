@@ -21,7 +21,8 @@ Commands:
 | Command | Purpose |
 |---|---|
 | `sleuth validate [--parallel N] <flow>` | Check a flow and print its execution order; with `--parallel`, also which nodes would run together |
-| `sleuth run [-env env.yaml] [-out evidence.json] [--parallel N] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1) |
+| `sleuth run [-env env.yaml] [-out evidence.json] [--parallel N] [-spec-drift-fail breaking\|review] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1); `-spec-drift-fail` fails the run if the live spec has drifted from its saved baseline |
+| `sleuth snapshot -env env.yaml -source NAME [-out file] [-force]` | Save a contract source's live OpenAPI document as its baseline, for runs to compare against |
 | `sleuth diff [-fail-on breaking\|review\|never] [-json] OLD NEW` | Compare two versions of an OpenAPI document and list what would break a client written against the old one |
 | `sleuth serve [-dir flows] [-env default.env.yaml] [-addr 127.0.0.1:8787]` | Local web dashboard: pick a flow, run it (optionally in parallel), watch it live; each flow uses its paired `<name>.env.yaml` |
 | `sleuth scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
@@ -266,6 +267,22 @@ responses) are listed as `info`. Things that cannot be classified mechanically, 
 Exit code 1 if anything breaking is found (`-fail-on review` also fails on review items, `-fail-on never` never fails),
 2 if a document cannot be loaded; `-json` prints the changes as data. A copy of the spec your flows were written against,
 diffed with the live `/openapi.json`, shows what moved before any flow runs.
+
+Runs can do that comparison for you. Save the spec the flows were written against, and name it in the env file:
+
+    sleuth snapshot -env env.yaml -source api       # writes baselines/api.openapi.json next to the env file
+
+    # env.yaml
+    contracts: {api: https://service.example/openapi.json}
+    baselines: {api: baselines/api.openapi.json}
+
+Every run that uses the `api` contract then diffs the baseline against the live document and records it in the evidence
+(`drift.spec_drift`, and a "Spec drift" section in the report and dashboard). Changes in operations the run actually
+called are marked `*`, since those are the ones this flow would trip over, and counted separately. By default this only
+reports. `-spec-drift-fail breaking` (or `review`) fails the run, and exits 1, when the document has such a change
+anywhere, not only in the operations that were called. A baseline that cannot be read is a setup error, so a drift
+check never silently does not run. `snapshot` refuses to overwrite an existing baseline without `-force`, because the
+baseline is what drift is measured against: review `sleuth diff old new` first, then replace it.
 
 ## Dashboard (experiment)
 

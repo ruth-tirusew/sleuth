@@ -135,3 +135,72 @@ func TestDiffExitCodes(t *testing.T) {
 		}
 	}
 }
+
+// specFixture: a live service + spec, a saved baseline that has since drifted, and an env file tying them together.
+func specFixture(t *testing.T, withBaseline bool) (envPath, flowPath, dir string) {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":1}`)) }))
+	t.Cleanup(srv.Close)
+	dir = t.TempDir()
+	live := `{"openapi":"3.1.0","paths":{"/u":{"get":{"responses":{"200":{"content":{"application/json":{"schema":{"type":"object","properties":{"id":{"type":"integer"}}}}}}}}}}}`
+	old := `{"openapi":"3.1.0","paths":{"/u":{"get":{"responses":{"200":{"content":{"application/json":{"schema":{"type":"object","properties":{"id":{"type":"integer"},"name":{"type":"string"}}}}}}}}},"/gone":{"get":{"responses":{"200":{}}}}}}`
+	os.WriteFile(filepath.Join(dir, "live.json"), []byte(live), 0o644)
+	env := "vars: {base: " + srv.URL + "}\ncontracts: {api: live.json}\n"
+	if withBaseline {
+		os.WriteFile(filepath.Join(dir, "old.json"), []byte(old), 0o644)
+		env += "baselines: {api: old.json}\n"
+	}
+	envPath = filepath.Join(dir, "e.yaml")
+	os.WriteFile(envPath, []byte(env), 0o644)
+	flowPath = filepath.Join(dir, "f.yaml")
+	os.WriteFile(flowPath, []byte("version: 1\nname: t\nnodes:\n  - {id: a, kind: request, contract: api, request: {url: \"{{ .env.base }}/u\"}}\n"), 0o644)
+	return envPath, flowPath, dir
+}
+
+func TestRunSpecDriftFlag(t *testing.T) {
+	env, flow, dir := specFixture(t, true)
+	out := filepath.Join(dir, "ev.json")
+	if code := run([]string{"run", "-env", env, "-out", out, flow}); code != 0 {
+		t.Fatalf("report-only drift must not fail the run: exit %d", code)
+	}
+	b, _ := os.ReadFile(out)
+	if !strings.Contains(string(b), `"spec_drift"`) || !strings.Contains(string(b), `"called_breaking": 1`) {
+		t.Fatalf("evidence lacks the drift: %s", b)
+	}
+	if code := run([]string{"run", "-env", env, "-out", out, "-spec-drift-fail", "breaking", flow}); code != 1 {
+		t.Fatalf("exit %d, want 1 (the spec moved under the flow)", code)
+	}
+	if code := run([]string{"run", "-env", env, "-out", out, "-spec-drift-fail", "whenever", flow}); code != 2 {
+		t.Fatalf("bad flag value: exit %d, want 2", code)
+	}
+}
+
+func TestSnapshotSavesRefusesToOverwriteAndRejectsNonSpecs(t *testing.T) {
+	env, _, dir := specFixture(t, false)
+	if code := run([]string{"snapshot", "-env", env, "-source", "api"}); code != 0 {
+		t.Fatalf("exit %d", code)
+	}
+	saved := filepath.Join(dir, "baselines", "api.openapi.json")
+	b, err := os.ReadFile(saved)
+	if err != nil || !strings.Contains(string(b), `"/u"`) || !strings.Contains(string(b), "\n  ") { // indented, reviewable
+		t.Fatalf("%v %s", err, b)
+	}
+	if code := run([]string{"snapshot", "-env", env, "-source", "api"}); code != 2 {
+		t.Fatalf("overwriting a baseline needs -force: exit %d", code)
+	}
+	if code := run([]string{"snapshot", "-env", env, "-source", "api", "-force"}); code != 0 {
+		t.Fatalf("-force: exit %d", code)
+	}
+	if code := run([]string{"snapshot", "-env", env, "-source", "nope"}); code != 2 {
+		t.Fatalf("unknown source: exit %d", code)
+	}
+
+	os.WriteFile(filepath.Join(dir, "live.json"), []byte(`{"not":"openapi"}`), 0o644)
+	before, _ := os.ReadFile(saved)
+	if code := run([]string{"snapshot", "-env", env, "-source", "api", "-force"}); code != 2 {
+		t.Fatalf("a non-OpenAPI document must not be saved: exit %d", code)
+	}
+	if after, _ := os.ReadFile(saved); string(after) != string(before) {
+		t.Fatal("a failed snapshot must leave the existing baseline untouched")
+	}
+}

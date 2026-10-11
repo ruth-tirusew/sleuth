@@ -15,6 +15,9 @@ type Options struct {
 	EnvName string
 	// Parallel is the maximum number of independent nodes run at once; 0 or 1 is serial.
 	Parallel int
+	// FailOnSpecDrift makes the run fail when a contract source differs from its saved baseline
+	// by at least this severity: "breaking" or "review". Empty records the differences only.
+	FailOnSpecDrift string
 	// OnEvent, if set, is told about progress as it happens. It is called from a single
 	// goroutine (the scheduler), in order, and must not block for long. Steps in events
 	// carry unmasked evidence: mask before they leave the process.
@@ -57,6 +60,10 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		return nil, nil, err
 	}
 	specs, err := loadContracts(f, env)
+	if err != nil {
+		return nil, nil, err
+	}
+	baselineDrift, err := diffBaselines(env, specs)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -177,6 +184,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		published[name] = sp.Operations()
 	}
 	report.AddCoverage(run, published)
+	report.AddSpecDrift(run, baselineDrift, opts.FailOnSpecDrift)
 	return run, secrets, nil
 }
 

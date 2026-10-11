@@ -84,3 +84,67 @@ func TestAddCoverageCountsCalledOperationsPerSource(t *testing.T) {
 		t.Fatal("coverage must not create a drift section")
 	}
 }
+
+func TestAddSpecDriftMarksCalledOperationsAndFailsOnThreshold(t *testing.T) {
+	mk := func() *Run {
+		return &Run{Status: Passed, Drift: &DriftSummary{}, Steps: []Step{
+			{ID: "a", Contract: &ContractResult{Source: "api", Operation: "GET /users/{id}"}},
+		}}
+	}
+	drifts := func() []SpecDrift {
+		return []SpecDrift{{Source: "api", Baseline: "base.json", Changes: []SpecChange{
+			{Severity: "breaking", Operation: "GET /users/{id}", Where: "response", Path: "200 $.nick", Message: "property removed"},
+			{Severity: "breaking", Operation: "GET /gone", Where: "operation", Message: "operation removed"},
+			{Severity: "review", Operation: "GET /users/{id}", Where: "response", Message: "format changed"},
+			{Severity: "info", Operation: "GET /new", Where: "operation", Message: "operation added"},
+		}}}
+	}
+
+	r := mk()
+	AddSpecDrift(r, drifts(), "")
+	sd := r.Drift.SpecDrift[0]
+	if sd.Breaking != 2 || sd.Review != 1 || sd.Info != 1 || sd.CalledBreaking != 1 || sd.Failing || r.Status != Passed {
+		t.Fatalf("report-only must count but not fail: %+v status=%s", sd, r.Status)
+	}
+	if !sd.Changes[0].Called || sd.Changes[1].Called || sd.Changes[3].Called {
+		t.Fatalf("only the operation a step called is marked: %+v", sd.Changes)
+	}
+
+	r = mk()
+	AddSpecDrift(r, drifts(), "breaking")
+	if !r.Drift.SpecDrift[0].Failing || r.Status != Failed {
+		t.Fatalf("breaking threshold: %+v", r.Drift.SpecDrift[0])
+	}
+
+	// review-only drift does not trip "breaking" but does trip "review"
+	reviewOnly := []SpecDrift{{Source: "api", Changes: []SpecChange{{Severity: "review", Operation: "GET /x", Where: "response", Message: "format changed"}}}}
+	r = mk()
+	AddSpecDrift(r, reviewOnly, "breaking")
+	if r.Drift.SpecDrift[0].Failing {
+		t.Fatal("review must not trip the breaking threshold")
+	}
+	r = mk()
+	AddSpecDrift(r, reviewOnly, "review")
+	if !r.Drift.SpecDrift[0].Failing || r.Status != Failed {
+		t.Fatal("review must trip the review threshold")
+	}
+
+	var out strings.Builder
+	r = mk()
+	AddSpecDrift(r, drifts(), "breaking")
+	printDrift(&out, r.Drift)
+	for _, want := range []string{"Spec drift: FAIL  api vs baseline base.json: 2 breaking, 1 to review, 1 compatible (1 breaking in operations this run called)", "*[breaking] GET /users/{id}", " [breaking] GET /gone", "(* = an operation this run called)"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("missing %q in:\n%s", want, out.String())
+		}
+	}
+	if strings.Contains(out.String(), "GET /new") {
+		t.Error("compatible changes are summarised in the count, not listed")
+	}
+
+	none := &Run{} // no contract used: no drift section to hang it on
+	AddSpecDrift(none, drifts(), "breaking")
+	if none.Drift != nil {
+		t.Fatal("must not invent a drift section")
+	}
+}

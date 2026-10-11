@@ -50,27 +50,34 @@ type Param struct {
 	Required bool
 }
 
-// Load reads an OpenAPI 3.x JSON document from a file path or http(s) URL.
-func Load(src string) (*Spec, error) {
-	var b []byte
-	var err error
+// Fetch reads the raw bytes of an OpenAPI document from a file path or http(s) URL.
+func Fetch(src string) ([]byte, error) {
 	if strings.HasPrefix(src, "http://") || strings.HasPrefix(src, "https://") {
 		c := http.Client{Timeout: 15 * time.Second}
-		resp, e := c.Get(src)
-		if e != nil {
-			return nil, e
+		resp, err := c.Get(src)
+		if err != nil {
+			return nil, err
 		}
 		defer resp.Body.Close()
 		if resp.StatusCode != 200 {
 			return nil, fmt.Errorf("GET %s: HTTP %d", src, resp.StatusCode)
 		}
-		b, err = io.ReadAll(resp.Body)
-	} else {
-		b, err = os.ReadFile(src)
+		return io.ReadAll(resp.Body)
 	}
+	return os.ReadFile(src)
+}
+
+// Load reads an OpenAPI 3.x JSON document from a file path or http(s) URL.
+func Load(src string) (*Spec, error) {
+	b, err := Fetch(src)
 	if err != nil {
 		return nil, err
 	}
+	return Parse(src, b)
+}
+
+// Parse reads an OpenAPI 3.x JSON document; src only labels it in errors.
+func Parse(src string, b []byte) (*Spec, error) {
 	s := &Spec{Source: src, compiled: map[string]*jsonschema.Schema{}}
 	// UnmarshalJSON keeps numbers exact (json.Number), which the schema compiler expects.
 	raw, err := jsonschema.UnmarshalJSON(bytes.NewReader(b))

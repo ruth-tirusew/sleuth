@@ -307,10 +307,20 @@ function driftCard(d) {
   else parts.push(h("div", {}, pill(d.failing ? "failed" : "passed", d.failing + " failing"), " ", h("span", { class: "pill warn" }, d.accepted + " accepted"),
     h("table", {}, h("tr", {}, h("th", {}, "mode"), h("th", {}, "operation"), h("th", {}, "where"), h("th", {}, "detail"), h("th", {}, "step")),
       d.findings.map(f => h("tr", {}, h("td", {}, f.mode), h("td", { class: "needs" }, f.source + " " + (f.operation || "")), h("td", {}, f.where), h("td", {}, (f.path || "") + " " + f.message), h("td", { class: "needs" }, f.step))))));
+  for (const sd of d.spec_drift || []) {
+    const shown = sd.changes.filter(c => c.severity !== "info");
+    parts.push(h("h4", { style: "margin:16px 0 6px" }, "Spec drift · " + sd.source + " vs saved baseline"));
+    parts.push(h("div", {}, pill(sd.failing ? "failed" : (sd.breaking ? "warn" : "passed"), sd.breaking + " breaking"), " ",
+      h("span", { class: "pill warn" }, sd.review + " to review"), " ", h("span", { class: "muted" }, sd.info + " compatible" + (sd.breaking ? " · " + sd.called_breaking + " breaking in operations this run called" : ""))));
+    parts.push(shown.length ? h("table", {}, h("tr", {}, h("th", {}, "severity"), h("th", {}, "operation"), h("th", {}, "where"), h("th", {}, "change"), h("th", {}, "called")),
+      shown.map(c => h("tr", {}, h("td", {}, c.severity), h("td", { class: "needs" }, c.operation || "(document)"), h("td", {}, c.where + (c.path ? " " + c.path : "")), h("td", {}, c.message), h("td", {}, c.called ? "yes" : "")))) : h("div", { class: "muted" }, "nothing a client of the baseline would trip over"));
+  }
   for (const sc of d.sources || []) {
     const pct = sc.total ? Math.round(sc.exercised * 100 / sc.total) : 100;
     parts.push(h("h4", { style: "margin:16px 0 6px" }, "Registry coverage · " + sc.source + " · " + sc.exercised + " of " + sc.total + " operations exercised (" + pct + "%)"));
-    parts.push(sc.untested && sc.untested.length ? h("ul", { class: "plain needs" }, sc.untested.map(o => h("li", {}, "not called: " + o))) : h("div", { class: "muted" }, "every published operation was called"));
+    const MAX = 15, more = (sc.untested || []).length - MAX;
+    parts.push(sc.untested && sc.untested.length ? h("ul", { class: "plain needs" }, sc.untested.slice(0, MAX).map(o => h("li", {}, "not called: " + o)),
+      more > 0 ? h("li", { class: "muted" }, "… and " + more + " more (all listed in the evidence file)") : null) : h("div", { class: "muted" }, "every published operation was called"));
   }
   if (d.coverage_gaps && d.coverage_gaps.length) {
     parts.push(h("h4", { style: "margin:16px 0 6px" }, "Calls the contract could not fully validate"));

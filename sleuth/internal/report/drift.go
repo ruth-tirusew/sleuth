@@ -15,8 +15,32 @@ type DriftSummary struct {
 	Failing    int            `json:"failing"`    // findings that failed their step
 	Accepted   int            `json:"accepted"`   // findings recorded under on_violation: warn
 	Operations int            `json:"operations"` // distinct operations with at least one finding
+	// SpecDrift is, per contract source with a saved baseline, how the live spec differs from it.
+	SpecDrift []SpecDrift `json:"spec_drift,omitempty"`
 	// Sources says, per contract source, how much of the published registry this run exercised.
 	Sources []SourceCoverage `json:"sources,omitempty"`
+}
+
+// SpecDrift is the difference between a contract source's saved baseline and the live document,
+// judged from the point of view of a client written against the baseline (see `sleuth diff`).
+type SpecDrift struct {
+	Source         string       `json:"source"`
+	Baseline       string       `json:"baseline"`
+	Breaking       int          `json:"breaking"`
+	Review         int          `json:"review"`
+	Info           int          `json:"info"`
+	CalledBreaking int          `json:"called_breaking"` // breaking changes in operations this run called
+	Failing        bool         `json:"failing,omitempty"`
+	Changes        []SpecChange `json:"changes"`
+}
+
+type SpecChange struct {
+	Severity  string `json:"severity"` // breaking | review | info
+	Operation string `json:"operation,omitempty"`
+	Where     string `json:"where"`
+	Path      string `json:"path,omitempty"`
+	Message   string `json:"message"`
+	Called    bool   `json:"called,omitempty"` // a step of this run called the operation
 }
 
 // SourceCoverage is the registry-wide view of one contract source: the operations the
@@ -117,6 +141,47 @@ func AddCoverage(r *Run, all map[string][]string) {
 	}
 }
 
+// AddSpecDrift records how each contract source differs from its baseline. A change is marked
+// "called" when a step of this run called its operation. failOn is "", "breaking" or "review":
+// when a source has a change at least that severe, it is marked failing and the run fails.
+func AddSpecDrift(r *Run, drifts []SpecDrift, failOn string) {
+	if r.Drift == nil || len(drifts) == 0 {
+		return
+	}
+	called := map[string]map[string]bool{}
+	for _, s := range r.Steps {
+		if c := s.Contract; c != nil && c.Operation != "" {
+			if called[c.Source] == nil {
+				called[c.Source] = map[string]bool{}
+			}
+			called[c.Source][c.Operation] = true
+		}
+	}
+	for _, d := range drifts {
+		d.Breaking, d.Review, d.Info, d.CalledBreaking = 0, 0, 0, 0
+		for i := range d.Changes {
+			c := &d.Changes[i]
+			c.Called = c.Operation != "" && called[d.Source][c.Operation]
+			switch c.Severity {
+			case "breaking":
+				d.Breaking++
+				if c.Called {
+					d.CalledBreaking++
+				}
+			case "review":
+				d.Review++
+			default:
+				d.Info++
+			}
+		}
+		d.Failing = (failOn == "breaking" && d.Breaking > 0) || (failOn == "review" && d.Breaking+d.Review > 0)
+		if d.Failing {
+			r.Status = Failed
+		}
+		r.Drift.SpecDrift = append(r.Drift.SpecDrift, d)
+	}
+}
+
 const maxUntestedShown = 15
 
 // printDrift renders the drift section of the CLI report.
@@ -137,6 +202,36 @@ func printDrift(w io.Writer, d *DriftSummary) {
 				tag = "warn"
 			}
 			fmt.Fprintf(w, "  [%s] %s %s [%s] %s %s  (step %s)\n", tag, f.Source, f.Operation, f.Where, f.Path, f.Message, f.Step)
+		}
+	}
+	for _, sd := range d.SpecDrift {
+		tag := ""
+		if sd.Failing {
+			tag = "FAIL  "
+		}
+		fmt.Fprintf(w, "Spec drift: %s%s vs baseline %s: %d breaking, %d to review, %d compatible", tag, sd.Source, sd.Baseline, sd.Breaking, sd.Review, sd.Info)
+		if sd.Breaking > 0 {
+			fmt.Fprintf(w, " (%d breaking in operations this run called)", sd.CalledBreaking)
+		}
+		fmt.Fprintln(w)
+		shown := 0
+		for _, c := range sd.Changes {
+			if c.Severity == "info" {
+				continue
+			}
+			if shown == maxUntestedShown {
+				fmt.Fprintf(w, "  ... and more (all listed in the evidence JSON)\n")
+				break
+			}
+			shown++
+			mark := " "
+			if c.Called {
+				mark = "*"
+			}
+			fmt.Fprintf(w, "  %s[%s] %s [%s] %s %s\n", mark, c.Severity, c.Operation, c.Where, c.Path, c.Message)
+		}
+		if shown > 0 {
+			fmt.Fprintln(w, "  (* = an operation this run called)")
 		}
 	}
 	for _, sc := range d.Sources {

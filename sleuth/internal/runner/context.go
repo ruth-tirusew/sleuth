@@ -21,6 +21,10 @@ type EnvConfig struct {
 	// Contracts maps a source name to an OpenAPI document (file path or http(s) URL).
 	// Entries are raw; use ContractLocation, which expands and resolves only what is used.
 	Contracts map[string]string `yaml:"contracts"`
+	// Baselines maps a contract source name to a saved copy of its OpenAPI document (a file,
+	// relative to the env file). Each run diffs it against the live contract and reports what
+	// changed since the flows were written (see `sleuth snapshot`).
+	Baselines map[string]string `yaml:"baselines"`
 	// Databases maps a connection name to a Postgres DSN, usually "${SOME_ENV_VAR}" so
 	// credentials stay out of files. Expanded only when a db node uses it.
 	Databases map[string]string `yaml:"databases"`
@@ -115,6 +119,25 @@ func SecretValues(env *EnvConfig) []string {
 		}
 	}
 	return out
+}
+
+// BaselineLocation resolves the saved baseline for a contract source; "" when none is configured.
+func (c *EnvConfig) BaselineLocation(source string) (string, error) {
+	raw, ok := c.Baselines[source]
+	if !ok {
+		return "", nil
+	}
+	v, err := expand(raw)
+	if err != nil {
+		return "", fmt.Errorf("baselines.%s: %w", source, err)
+	}
+	if strings.TrimSpace(v) == "" {
+		return "", fmt.Errorf("baselines.%s is empty", source)
+	}
+	if !strings.Contains(v, "://") && !filepath.IsAbs(v) {
+		v = filepath.Join(filepath.Dir(c.path), v)
+	}
+	return v, nil
 }
 
 // Context is the run context: env, secrets and the outputs of completed nodes.

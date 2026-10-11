@@ -37,3 +37,17 @@ classified mechanically: composition keywords, `pattern`/`format`, security requ
   schema also forbids extra properties.
 - It reads the document only. It cannot tell that a service started behaving differently while the spec stayed the same;
   that is what running a flow against the live service is for.
+
+## Baselines: the diff inside a run (third slice, done)
+A contract source can name a saved copy of its document under `baselines:` in the env file. Every run that uses the source
+diffs the baseline against the live document and records it as `drift.spec_drift` (counts, the changes, and for each change
+whether a step of the run called that operation). `sleuth snapshot` writes the baseline.
+
+- **Report-only by default.** A spec that moved is a finding about the provider, not about the step, so it does not fail
+  a run unless asked: `run -spec-drift-fail breaking|review`. Then the run is `failed` and exits 1 (the same class as a
+  contract failure), because the spec moved under the flow.
+- **The threshold applies to the whole document, not only the operations the run called.** That matches `sleuth diff
+  -fail-on` and keeps the rule predictable; the report separates the called operations so the relevant ones stand out.
+- **A baseline that cannot be loaded is a setup error (exit 2).** Silently skipping it would make "no drift" mean "not checked".
+- **`snapshot` will not overwrite** an existing baseline without `-force`, since a replaced baseline erases the drift it
+  was there to catch.

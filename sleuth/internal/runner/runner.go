@@ -179,6 +179,9 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	run.Steps = steps
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
+	if len(specs) > 0 {
+		report.EnsureDrift(run) // the flow references a contract: report coverage and spec drift even if no call ran
+	}
 	published := map[string][]string{}
 	for name, sp := range specs {
 		published[name] = sp.Operations()

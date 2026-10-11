@@ -145,7 +145,8 @@ func snapshotSpec(args []string) int {
 		fmt.Fprintln(os.Stderr, "error: contract source", *source+":", err)
 		return 2
 	}
-	if _, err := registry.Parse(loc, raw); err != nil { // never save something that is not an OpenAPI document
+	sp, err := registry.Parse(loc, raw)
+	if err != nil { // never save something that is not an OpenAPI document
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
@@ -167,7 +168,7 @@ func snapshotSpec(args []string) int {
 		fmt.Fprintln(os.Stderr, "error:", err)
 		return 2
 	}
-	fmt.Printf("saved %s (%d operations) to %s\n", *source, len(mustOps(raw, loc)), dest)
+	fmt.Printf("saved %s (%d operations) to %s\n", *source, len(sp.Operations()), dest)
 	if configured == "" {
 		rel, relErr := filepath.Rel(filepath.Dir(*envPath), dest)
 		if relErr != nil {
@@ -176,14 +177,6 @@ func snapshotSpec(args []string) int {
 		fmt.Printf("add to %s so runs compare against it:\n  baselines:\n    %s: %s\n", *envPath, *source, rel)
 	}
 	return 0
-}
-
-func mustOps(raw []byte, loc string) []string {
-	sp, err := registry.Parse(loc, raw)
-	if err != nil {
-		return nil
-	}
-	return sp.Operations()
 }
 
 // diffSpecs compares two versions of a published OpenAPI document and reports what a client

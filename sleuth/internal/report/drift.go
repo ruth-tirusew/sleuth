@@ -10,11 +10,14 @@ import (
 // violation across all steps, plus the places where the contract was too thin to check.
 // It is reported, never a crash: a run with drift still completes and records everything.
 type DriftSummary struct {
-	Findings   []DriftFinding `json:"findings"`
-	Coverage   []CoverageGap  `json:"coverage_gaps,omitempty"`
-	Failing    int            `json:"failing"`    // findings that failed their step
-	Accepted   int            `json:"accepted"`   // findings recorded under on_violation: warn
-	Operations int            `json:"operations"` // distinct operations with at least one finding
+	Findings []DriftFinding `json:"findings"`
+	// CallsChecked is how many contract steps produced evidence. Zero means no contract call
+	// actually ran (for example every contract node was skipped), so "no findings" says nothing.
+	CallsChecked int           `json:"calls_checked"`
+	Coverage     []CoverageGap `json:"coverage_gaps,omitempty"`
+	Failing      int           `json:"failing"`    // findings that failed their step
+	Accepted     int           `json:"accepted"`   // findings recorded under on_violation: warn
+	Operations   int           `json:"operations"` // distinct operations with at least one finding
 	// SpecDrift is, per contract source with a saved baseline, how the live spec differs from it.
 	SpecDrift []SpecDrift `json:"spec_drift,omitempty"`
 	// Sources says, per contract source, how much of the published registry this run exercised.
@@ -83,6 +86,7 @@ func SummarizeDrift(r *Run) {
 			continue
 		}
 		used = true
+		d.CallsChecked++
 		for _, v := range c.Violations {
 			d.Findings = append(d.Findings, DriftFinding{
 				Step: s.ID, Source: c.Source, Operation: c.Operation,
@@ -104,6 +108,15 @@ func SummarizeDrift(r *Run) {
 	}
 	d.Operations = len(ops)
 	r.Drift = d
+}
+
+// EnsureDrift makes sure the run has a drift block. The runner calls it when the flow
+// references a contract source, so that spec drift and coverage are reported (and the
+// spec-drift gate is enforced) even when no contract step ran.
+func EnsureDrift(r *Run) {
+	if r.Drift == nil {
+		r.Drift = &DriftSummary{Findings: []DriftFinding{}}
+	}
 }
 
 // AddCoverage records, for each contract source, which of its published operations the
@@ -191,12 +204,18 @@ func printDrift(w io.Writer, d *DriftSummary) {
 	}
 	fmt.Fprintln(w)
 	if len(d.Findings) == 0 {
-		fmt.Fprintln(w, "Contract drift: none")
+		if d.CallsChecked == 0 {
+			fmt.Fprintln(w, "Contract drift: none found, but no contract call ran, so nothing was checked")
+		} else {
+			fmt.Fprintln(w, "Contract drift: none")
+		}
 	} else {
 		fmt.Fprintf(w, "Contract drift: %d finding(s) across %d operation(s) — %d failing, %d accepted (warn)\n",
 			len(d.Findings), d.Operations, d.Failing, d.Accepted)
-		sort.SliceStable(d.Findings, func(i, j int) bool { return d.Findings[i].Mode < d.Findings[j].Mode }) // fail first
-		for _, f := range d.Findings {
+		// Failing findings first, on a copy: printing must not reorder the report's own data.
+		shown := append([]DriftFinding(nil), d.Findings...)
+		sort.SliceStable(shown, func(i, j int) bool { return shown[i].Mode < shown[j].Mode })
+		for _, f := range shown {
 			tag := "FAIL"
 			if f.Mode == "warn" {
 				tag = "warn"

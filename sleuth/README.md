@@ -100,6 +100,13 @@ output name → path in the response (`token: body.token`). Optional `contract:`
 A list of checks, each with a `path` into the context and one or more operators: `equals`, `exists`, `contains`,
 `matches` (regex), `gt`, `lt`, plus an optional `message`. All checks are evaluated and reported.
 
+Numbers from an API, Postgres or MongoDB are kept exact, so an id such as `9007199254740993` is neither rounded nor
+reformatted, and `equals` compares numbers by value (`1.50` equals `1.5`). The numbers you write in a check's `equals`
+and `contains` are read as exact text too, so `equals: 12345678901234567890.123456789` means exactly that. Numbers
+written elsewhere in a flow (a request `body`, db `args`, a `transform`) are read by the YAML parser as ordinary
+numbers, so keep a value with more than about 15 significant digits in a string there. `gt` / `lt` are magnitude
+comparisons and use floats.
+
 ### `transform`
 
 `set` maps output names to values (templates allowed), available as `nodes.<id>.out.<name>`.

@@ -289,3 +289,170 @@ nodes:
 		t.Fatalf("a request that can never be valid must not be retried: %d attempts", w.Poll.Attempts)
 	}
 }
+
+// A service that answered earlier but whose last attempt was cut short by the poll's own
+// deadline never converged: that is a timeout (exit 1), not an infrastructure failure.
+func TestPollStarvedFinalAttemptIsTimeoutNotInfrastructure(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) >= 3 {
+			time.Sleep(3 * time.Second) // outlasts the window
+		}
+		fmt.Fprint(w, `{"status":"PENDING"}`)
+	}))
+	defer srv.Close()
+	r := runYAML(t, srv.URL, fmt.Sprintf(pollFlow, "1200ms"))
+	if w := step(r, "wait"); w.ErrorKind != KindTimeout || w.Poll.Attempts < 3 {
+		t.Fatalf("want timeout after answered attempts, got kind=%q attempts=%d: %s", w.ErrorKind, w.Poll.Attempts, w.Error)
+	}
+}
+
+// ...but a failure of an attempt that had its full budget is still infrastructure.
+func TestPollFullBudgetFailureIsInfrastructure(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) > 1 {
+			time.Sleep(2 * time.Second) // the service stops answering
+		}
+		fmt.Fprint(w, `{"status":"PENDING"}`)
+	}))
+	defer srv.Close()
+	r := runYAML(t, srv.URL, `
+version: 1
+name: t
+nodes:
+  - id: wait
+    kind: poll
+    poll:
+      interval: 50ms
+      timeout: 1500ms
+      request: {url: "{{ .env.base }}/", timeout: 100ms}
+      until: [{path: nodes.wait.response.body.status, equals: DONE}]
+`)
+	if w := step(r, "wait"); w.ErrorKind != KindInfra {
+		t.Fatalf("want infrastructure, got kind=%q: %s", w.ErrorKind, w.Error)
+	}
+}
+
+// When a contract poll never converges, the last attempt's "still pending" shape is not
+// drift, but an undocumented status seen on an earlier attempt still is.
+func TestPollContractTimeoutKeepsUndocumentedStatusAndDropsIntermediateShape(t *testing.T) {
+	var calls int32
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		n := atomic.AddInt32(&calls, 1)
+		if n == 1 {
+			w.WriteHeader(202) // not documented in the contract
+			fmt.Fprint(w, `{}`)
+			return
+		}
+		if n%2 == 0 { // 200, but the shape changes between attempts
+			fmt.Fprint(w, `{"status":"PENDING"}`) // lacks id and name
+		} else {
+			fmt.Fprint(w, `{"id":7,"status":"PENDING"}`) // lacks name
+		}
+	}
+	flowYAML := strings.Replace(pollContractFlow("api"), "timeout: 5s", "timeout: 400ms", 1)
+	r := runContract(t, flowYAML, handler)
+	w := step(r, "wait")
+	if w.ErrorKind != KindTimeout {
+		t.Fatalf("kind=%q: %s", w.ErrorKind, w.Error)
+	}
+	if len(w.Contract.Violations) != 1 || !undocumented(w.Contract.Violations[0]) {
+		t.Fatalf("want only the undocumented 202, got %+v", w.Contract.Violations)
+	}
+	if r.Drift == nil || r.Drift.Failing != 1 {
+		t.Fatalf("drift summary should hold just that finding: %+v", r.Drift)
+	}
+}
+
+func TestMergeViolationsKeysOnWherePathAndMessage(t *testing.T) {
+	same := report.Violation{Where: "response", Path: "$.a", Message: "X"}
+	got := mergeViolations(
+		[]report.Violation{same},
+		[]report.Violation{
+			same, // exact duplicate: dropped
+			{Where: "response", Path: "$.b", Message: "X"}, // same text, other path: kept
+			{Where: "request", Path: "$.a", Message: "X"},  // same text, other place: kept
+			{Where: "response", Path: "$.a", Message: "Y"}, // other text: kept
+		})
+	if len(got) != 4 {
+		t.Fatalf("want 4 distinct findings, got %d: %+v", len(got), got)
+	}
+}
+
+// A fast, real failure after a good answer is infrastructure even when the poll window is
+// shorter than the default request timeout: only a failure caused by the window running
+// out says nothing about the service.
+func TestPollFastFailureAfterAnAnswerIsInfrastructureEvenInAShortWindow(t *testing.T) {
+	var calls int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) > 1 {
+			conn, _, _ := w.(http.Hijacker).Hijack()
+			conn.Close() // the service dies: an instant connection error, not a slow one
+			return
+		}
+		fmt.Fprint(w, `{"status":"PENDING"}`)
+	}))
+	defer srv.Close()
+	// no request timeout set: the default is 30s, longer than this 2s window
+	r := runYAML(t, srv.URL, fmt.Sprintf(pollFlow, "2s"))
+	if w := step(r, "wait"); w.ErrorKind != KindInfra {
+		t.Fatalf("want infrastructure, got kind=%q: %s", w.ErrorKind, w.Error)
+	}
+}
+
+// A schema violation present on every attempt is not an intermediate shape: it is real
+// drift and must survive a poll that never converges. Shapes that vary between attempts
+// are still dropped.
+func TestPollContractKeepsPersistentViolationsDropsVaryingOnes(t *testing.T) {
+	flowYAML := strings.Replace(pollContractFlow("api"), "timeout: 5s", "timeout: 400ms", 1)
+
+	persistent := runContract(t, flowYAML, func(w http.ResponseWriter, _ *http.Request) {
+		fmt.Fprint(w, `{"id":"seven"}`) // id has the wrong type and name is missing, on every attempt
+	})
+	p := step(persistent, "wait")
+	if p.ErrorKind != KindTimeout || p.Contract == nil {
+		t.Fatalf("setup: %+v", p)
+	}
+	found := false
+	for _, v := range p.Contract.Violations {
+		if v.Where == "response" && strings.Contains(v.Path, "id") {
+			found = true
+		}
+	}
+	if !found || persistent.Drift == nil || persistent.Drift.Failing == 0 {
+		t.Fatalf("a violation present on every attempt is real drift and must be kept: %+v", p.Contract.Violations)
+	}
+
+	var calls int32
+	varying := runContract(t, flowYAML, func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1)%2 == 1 {
+			fmt.Fprint(w, `{"status":"P1"}`) // lacks id and name
+		} else {
+			fmt.Fprint(w, `{"id":7,"status":"P2"}`) // lacks name
+		}
+	})
+	if v := step(varying, "wait").Contract.Violations; len(v) != 0 {
+		t.Fatalf("shapes that change between attempts are intermediate, not drift: %+v", v)
+	}
+}
+
+// With a single answer a pending shape cannot be told from drift, so it is not reported as
+// drift, but the poll says so instead of dropping it silently.
+func TestPollContractSingleAnswerIsNotSilent(t *testing.T) {
+	var calls int32
+	handler := func(w http.ResponseWriter, _ *http.Request) {
+		if atomic.AddInt32(&calls, 1) == 1 {
+			fmt.Fprint(w, `{"id":"seven"}`) // an answer with a contract violation
+			return
+		}
+		time.Sleep(2 * time.Second) // then the service stops answering within the window
+	}
+	flowYAML := strings.Replace(pollContractFlow("api"), "timeout: 5s", "timeout: 600ms", 1)
+	flowYAML = strings.Replace(flowYAML, "request: {url:", "request: {timeout: 100ms, url:", 1)
+	r := runContract(t, flowYAML, handler)
+	w := step(r, "wait")
+	if w.Contract == nil || len(w.Contract.Notes) == 0 || !strings.Contains(strings.Join(w.Contract.Notes, " "), "only answered attempt") {
+		t.Fatalf("the held-back finding must be visible as a note: %+v", w.Contract)
+	}
+}

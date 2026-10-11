@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"regexp"
 	"strings"
 	"testing"
 	"time"
@@ -153,6 +154,10 @@ func TestLiveMongo(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	price, _ := bson.ParseDecimal128("10.50")
+	if _, err := db.Collection("precise").InsertOne(bg, bson.M{"ref": "P-1", "big": int64(9007199254740993), "price": price}); err != nil {
+		t.Fatal(err)
+	}
 	go func() { // async work for the poll
 		time.Sleep(450 * time.Millisecond)
 		db.Collection("settle").InsertOne(bg, bson.M{"loan": "L-1", "state": "SETTLED"})
@@ -234,6 +239,26 @@ nodes:
     kind: db
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: loans, filter: {amount: {$bogus: 1}}}
     assert: [{path: nodes.bad_op.row_count, gt: 0}]
+  - id: precise
+    kind: db
+    db: {type: mongo, connection: m, database: sleuth_scratch, collection: precise, extract: {big: rows.0.big}}
+    assert:
+      - {path: nodes.precise.rows.0.big, equals: 9007199254740993, message: a NumberLong beyond 2^53 must not be rounded}
+      - {path: nodes.precise.rows.0.price, equals: 10.5, message: Decimal128 10.50 equals 10.5}
+  - id: precise_off_by_one
+    kind: db
+    db: {type: mongo, connection: m, database: sleuth_scratch, collection: precise}
+    assert: [{path: nodes.precise_off_by_one.rows.0.big, equals: 9007199254740992}]
+  - id: precise_roundtrip
+    kind: db
+    needs: [precise]
+    db:
+      type: mongo
+      connection: m
+      database: sleuth_scratch
+      collection: precise
+      filter: {big: "{{ .nodes.precise.out.big }}"}
+    assert: [{path: nodes.precise_roundtrip.row_count, equals: 1, message: the extracted long is sent back unchanged}]
   - id: unreachable
     kind: db
     db: {type: mongo, connection: down, database: d, collection: c, timeout: 2s}
@@ -247,7 +272,7 @@ nodes:
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: loans, max_rows: 2}
     assert: [{path: nodes.too_many.row_count, gt: 0}]
 `, id1.Hex(), id1.Hex()))
-	for _, id := range []string{"active", "by_id", "totals", "templated", "settled"} {
+	for _, id := range []string{"active", "by_id", "totals", "templated", "settled", "precise", "precise_roundtrip"} {
 		if s := step(r, id); s.Status != report.Passed {
 			t.Errorf("%s: %+v checks=%+v", id, s, s.Checks)
 		}
@@ -260,6 +285,12 @@ nodes:
 		if got := step(r, id).ErrorKind; got != k {
 			t.Errorf("%s: kind %q want %q (%s)", id, got, k, step(r, id).Error)
 		}
+	}
+	if step(r, "precise_off_by_one").Status != report.Failed {
+		t.Error("9007199254740992 must not equal the stored 9007199254740993")
+	}
+	if e := step(r, "bad_op").Error; !regexp.MustCompile(`^mongo error \d+ \(\w+\)`).MatchString(e) {
+		t.Errorf("the server's error code and name should be reported, got %q", e)
 	}
 	if !strings.Contains(step(r, "writes").Error, "$out") {
 		t.Errorf("writes: %s", step(r, "writes").Error)
@@ -333,5 +364,53 @@ func TestLivePGPoolRecoversFromKilledConnections(t *testing.T) {
 	rows, err := queryDB(ctx, env, conns, q, &report.Step{})
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("expected recovery on a fresh connection: rows=%v err=%v", rows, err)
+	}
+}
+
+// bigint and numeric must come back exact and travel into the next query unchanged.
+// SLEUTH_TEST_PG_DSN=postgres://.../scratch go test ./internal/runner -run LivePGExact
+func TestLivePGExactBigintAndNumeric(t *testing.T) {
+	dsn := os.Getenv("SLEUTH_TEST_PG_DSN")
+	if dsn == "" {
+		t.Skip("SLEUTH_TEST_PG_DSN not set")
+	}
+	r := runDBs(t, map[string]string{"main": dsn}, `
+version: 1
+name: t
+nodes:
+  - id: a
+    kind: db
+    db:
+      connection: main
+      query: "SELECT 9007199254740993::bigint AS big, 12345678901234567890.123456789::numeric AS dec"
+      extract: {big: rows.0.big}
+    assert:
+      - {path: nodes.a.rows.0.big, equals: 9007199254740993}
+      - {path: nodes.a.rows.0.dec, equals: 12345678901234567890.123456789}
+  - id: off_decimal
+    kind: db
+    db: {connection: main, query: "SELECT 12345678901234567890.123456788::numeric AS dec"}
+    assert: [{path: nodes.off_decimal.rows.0.dec, equals: 12345678901234567890.123456789, message: a decimal off in the last digit must not pass}]
+  - id: off
+    kind: db
+    db: {connection: main, query: "SELECT 9007199254740993::bigint AS big"}
+    assert: [{path: nodes.off.rows.0.big, equals: 9007199254740992}]
+  - id: b
+    kind: db
+    needs: [a]
+    db: {connection: main, query: "SELECT $1::bigint = 9007199254740993 AS same", args: ["{{ .nodes.a.out.big }}"]}
+    assert: [{path: nodes.b.rows.0.same, equals: true}]
+`)
+	if s := step(r, "a"); s.Status != report.Passed {
+		t.Fatalf("a: %+v %+v", s, s.Checks)
+	}
+	if step(r, "off_decimal").Status != report.Failed {
+		t.Fatal("a decimal that differs in its last digit must not compare equal")
+	}
+	if step(r, "off").Status != report.Failed {
+		t.Fatal("an off-by-one bigint must not compare equal")
+	}
+	if s := step(r, "b"); s.Status != report.Passed {
+		t.Fatalf("the extracted bigint was altered on the way back into a query: %+v %+v", s, s.Checks)
 	}
 }

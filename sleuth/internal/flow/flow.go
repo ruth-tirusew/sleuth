@@ -7,6 +7,8 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"text/template"
+	"text/template/parse"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -83,6 +85,128 @@ type Check struct {
 	Gt       *float64 `yaml:"gt,omitempty" json:"gt,omitempty"`
 	Lt       *float64 `yaml:"lt,omitempty" json:"lt,omitempty"`
 	Message  string   `yaml:"message,omitempty" json:"message,omitempty"`
+}
+
+var checkKeys = map[string]bool{"path": true, "equals": true, "exists": true, "contains": true, "matches": true, "gt": true, "lt": true, "message": true}
+
+// UnmarshalYAML reads a check, keeping the exact text of any number in its expected values
+// (`equals`, `contains`): YAML would otherwise parse 12345678901234567890.123456789 as a
+// float64 and round it before it is ever compared. Unknown fields stay an error. YAML anchors
+// and merge keys (`<<: *base`) work as they do everywhere else.
+func (c *Check) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: a check must be a mapping", n.Line)
+	}
+	entries := mappingEntries(n, 0)
+	for _, e := range entries {
+		if !checkKeys[e.key.Value] {
+			return fmt.Errorf("line %d: field %s not found in a check", e.key.Line, e.key.Value)
+		}
+	}
+	type plain Check
+	if err := n.Decode((*plain)(c)); err != nil { // the YAML decoder resolves merges itself
+		return err
+	}
+	for _, e := range entries {
+		switch e.key.Value {
+		case "equals":
+			c.Equals = exactValue(e.val)
+		case "contains":
+			c.Contains = exactValue(e.val)
+		}
+	}
+	return nil
+}
+
+type yamlEntry struct{ key, val *yaml.Node }
+
+// mappingEntries lists a mapping's key/value pairs with merge keys (`<<`) expanded and
+// aliases followed. An explicit key beats a merged one, and an earlier merge beats a later one.
+func mappingEntries(n *yaml.Node, depth int) []yamlEntry {
+	if depth > maxYAMLDepth { // a self-referential anchor must be an error, not a stack overflow
+		return nil
+	}
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		n = n.Alias
+	}
+	var out []yamlEntry
+	seen := map[string]bool{}
+	var merges []*yaml.Node
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		k, v := n.Content[i], n.Content[i+1]
+		if k.Tag == "!!merge" { // only the real merge key; a quoted "<<" is ordinary data
+			merges = append(merges, v)
+			continue
+		}
+		out = append(out, yamlEntry{k, v})
+		seen[k.Value] = true
+	}
+	for _, m := range merges {
+		if m.Kind == yaml.AliasNode && m.Alias != nil {
+			m = m.Alias
+		}
+		var sources []*yaml.Node
+		if m.Kind == yaml.SequenceNode {
+			sources = m.Content
+		} else {
+			sources = []*yaml.Node{m}
+		}
+		for _, src := range sources {
+			for _, e := range mappingEntries(src, depth+1) {
+				if !seen[e.key.Value] {
+					out = append(out, e)
+					seen[e.key.Value] = true
+				}
+			}
+		}
+	}
+	return out
+}
+
+var numberLiteral = regexp.MustCompile(`^-?(0|[1-9][0-9]*)(\.[0-9]+)?([eE][+-]?[0-9]+)?$`)
+
+// IsNumberLiteral reports whether s is a valid JSON number ("NaN" and "Infinity" are not).
+// It is the one definition used when reading flows and when reading results.
+func IsNumberLiteral(s string) bool { return numberLiteral.MatchString(s) }
+
+// exactValue decodes a YAML node like any, except decimal number scalars become json.Number
+// (their exact text). Other number forms (hex, octal, 1_000) keep YAML's normal decoding.
+func exactValue(n *yaml.Node) any { return exactValueAt(n, 0) }
+
+// maxYAMLDepth bounds how far aliases and merges are followed.
+const maxYAMLDepth = 64
+
+func exactValueAt(n *yaml.Node, depth int) any {
+	if depth > maxYAMLDepth {
+		return nil
+	}
+	if n.Kind == yaml.AliasNode && n.Alias != nil {
+		return exactValueAt(n.Alias, depth+1)
+	}
+	switch n.Kind {
+	case yaml.ScalarNode:
+		if (n.Tag == "!!int" || n.Tag == "!!float") && IsNumberLiteral(n.Value) {
+			return json.Number(n.Value)
+		}
+	case yaml.MappingNode:
+		m := make(map[string]any, len(n.Content)/2)
+		for _, e := range mappingEntries(n, depth) {
+			m[e.key.Value] = exactValueAt(e.val, depth+1)
+		}
+		return m
+	case yaml.SequenceNode:
+		out := make([]any, len(n.Content))
+		for i, e := range n.Content {
+			out[i] = exactValueAt(e, depth+1)
+		}
+		return out
+	}
+	var v any
+	_ = n.Decode(&v)
+	return v
 }
 
 // Poll repeats a request until every `until` check passes or the timeout elapses.
@@ -194,7 +318,16 @@ type Transform struct {
 }
 
 var idRe = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
-var refRe = regexp.MustCompile(`\bnodes\.([A-Za-z_][A-Za-z0-9_]*)`)
+
+// A node reference is only real in two places: inside a {{ ... }} template expression
+// (".nodes.<id>"), or as the `path:` of a check ("nodes.<id>.response.status"). Anywhere
+// else the text is just text: a URL host such as nodes.cluster.local, or a message
+// mentioning "nodes.count", must not become a dependency.
+var (
+	tplRe     = regexp.MustCompile(`(?s)\{\{(.*?)\}\}`)
+	tplRefRe  = regexp.MustCompile(`\.nodes\.([A-Za-z_][A-Za-z0-9_]*)`)
+	pathRefRe = regexp.MustCompile(`^\.?nodes\.([A-Za-z_][A-Za-z0-9_]*)`)
+)
 
 func Load(path string) (*Flow, error) {
 	b, err := os.ReadFile(path)
@@ -225,6 +358,9 @@ func (f *Flow) Validate() error {
 	}
 	seen := map[string]bool{}
 	for _, n := range f.Nodes {
+		if _, untraceable := n.refs(); untraceable && len(n.Needs) == 0 {
+			return fmt.Errorf("node %s: a template reads .nodes in a way that cannot be traced to specific nodes (for example through a variable); list the nodes it uses under needs:", n.ID)
+		}
 		if c := n.Contract; c != nil {
 			if n.Kind != KindRequest && n.Kind != KindPoll {
 				return fmt.Errorf("node %s: contract is only valid on request and poll nodes", n.ID)
@@ -310,8 +446,8 @@ func (f *Flow) Validate() error {
 	return err
 }
 
-// Deps returns explicit `needs` plus dependencies inferred from `nodes.<id>`
-// references anywhere in the node.
+// Deps returns explicit `needs` plus dependencies inferred from `nodes.<id>` references
+// in template expressions and in the paths of checks (see refs).
 func (n Node) Deps() []string {
 	set := map[string]bool{}
 	var out []string
@@ -324,11 +460,158 @@ func (n Node) Deps() []string {
 	for _, d := range n.Needs {
 		add(d)
 	}
-	b, _ := json.Marshal(n)
-	for _, m := range refRe.FindAllSubmatch(b, -1) {
-		add(string(m[1]))
+	ids, _ := n.refs()
+	for _, id := range ids {
+		add(id)
 	}
 	return out
+}
+
+// refs returns the node ids this node reads, and whether it also reads .nodes in a way that
+// cannot be traced to specific nodes (for example `{{ with $n := .nodes }}`).
+func (n Node) refs() (ids []string, untraceable bool) {
+	add := func(id string) { ids = append(ids, id) }
+	// A check's path reads the run context directly ("nodes.<id>.response.status"). These are
+	// taken from the typed checks, not guessed from key names, so a request body field that
+	// happens to be called "path" is data and never a reference.
+	checks := n.Assert
+	if n.Poll != nil {
+		checks = append(append([]Check(nil), checks...), n.Poll.Until...)
+	}
+	for _, c := range checks {
+		if m := pathRefRe.FindStringSubmatch(c.Path); m != nil {
+			add(m[1])
+		}
+	}
+	// Everything else is searched for templates.
+	var generic any
+	b, err := json.Marshal(n)
+	if err != nil || json.Unmarshal(b, &generic) != nil {
+		return ids, untraceable
+	}
+	scanTemplates(generic, add, &untraceable)
+	return ids, untraceable
+}
+
+// scanTemplates walks a node (as generic JSON) and reports the node references inside every
+// template string. Map keys are not scanned: keys are never rendered, so a template in a
+// key is just text.
+func scanTemplates(v any, add func(string), untraceable *bool) {
+	switch x := v.(type) {
+	case map[string]any:
+		for _, e := range x {
+			scanTemplates(e, add, untraceable)
+		}
+	case []any:
+		for _, e := range x {
+			scanTemplates(e, add, untraceable)
+		}
+	case string:
+		if strings.Contains(x, "{{") {
+			templateRefs(x, add, untraceable)
+		}
+	}
+}
+
+// templateRefs finds the nodes a template reads by parsing it, so `.nodes.a.out.x` and
+// `(index .nodes "a").out.x` both count and text inside string literals does not.
+func templateRefs(text string, add func(string), untraceable *bool) {
+	t, err := template.New("").Parse(text)
+	if err != nil || t.Tree == nil {
+		// not a template Go can parse: fall back to a plain scan of the {{ }} bodies
+		for _, body := range tplRe.FindAllStringSubmatch(text, -1) {
+			for _, m := range tplRefRe.FindAllStringSubmatch(body[1], -1) {
+				add(m[1])
+			}
+		}
+		return
+	}
+	walkTemplate(t.Tree.Root, false, add, untraceable)
+}
+
+// scoped is true inside range / with, where `.` is no longer the root data.
+func walkTemplate(n parse.Node, scoped bool, add func(string), untraceable *bool) {
+	switch x := n.(type) {
+	case nil:
+	case *parse.ListNode:
+		if x == nil {
+			return
+		}
+		for _, c := range x.Nodes {
+			walkTemplate(c, scoped, add, untraceable)
+		}
+	case *parse.ActionNode:
+		walkTemplate(x.Pipe, scoped, add, untraceable)
+	case *parse.PipeNode:
+		if x == nil {
+			return
+		}
+		for _, d := range x.Decl {
+			walkTemplate(d, scoped, add, untraceable)
+		}
+		for _, c := range x.Cmds {
+			walkTemplate(c, scoped, add, untraceable)
+		}
+	case *parse.CommandNode:
+		// (index .nodes "id"): a lookup by literal id is traceable
+		if len(x.Args) >= 3 {
+			if id, ok := x.Args[0].(*parse.IdentifierNode); ok && id.Ident == "index" {
+				if f, ok := x.Args[1].(*parse.FieldNode); ok && len(f.Ident) == 1 && f.Ident[0] == "nodes" {
+					if lit, ok := x.Args[2].(*parse.StringNode); ok {
+						add(lit.Text)
+						for _, a := range x.Args[3:] {
+							walkTemplate(a, scoped, add, untraceable)
+						}
+						return
+					}
+				}
+			}
+		}
+		for _, a := range x.Args {
+			walkTemplate(a, scoped, add, untraceable)
+		}
+	case *parse.FieldNode:
+		if len(x.Ident) > 0 && x.Ident[0] == "nodes" {
+			if len(x.Ident) >= 2 {
+				add(x.Ident[1])
+			} else {
+				*untraceable = true
+			}
+		}
+	case *parse.VariableNode:
+		// $ is the root data, so $.nodes.a.out.x reads node a just like .nodes.a.out.x. Using
+		// $ itself (or $.nodes as a whole) reads every node, which cannot be ordered.
+		if len(x.Ident) >= 1 && x.Ident[0] == "$" {
+			switch {
+			case len(x.Ident) == 1: // bare $
+				*untraceable = true
+			case x.Ident[1] == "nodes" && len(x.Ident) >= 3:
+				add(x.Ident[2])
+			case x.Ident[1] == "nodes":
+				*untraceable = true
+			}
+		}
+	case *parse.DotNode:
+		if !scoped { // . at the top level is the whole root data
+			*untraceable = true
+		}
+	case *parse.ChainNode:
+		walkTemplate(x.Node, scoped, add, untraceable)
+	case *parse.IfNode:
+		walkTemplate(x.Pipe, scoped, add, untraceable)
+		walkTemplate(x.List, scoped, add, untraceable)
+		walkTemplate(x.ElseList, scoped, add, untraceable)
+	case *parse.RangeNode:
+		walkTemplate(x.Pipe, scoped, add, untraceable)
+		walkTemplate(x.List, true, add, untraceable)
+		walkTemplate(x.ElseList, scoped, add, untraceable)
+	case *parse.WithNode:
+		walkTemplate(x.Pipe, scoped, add, untraceable)
+		walkTemplate(x.List, true, add, untraceable)
+		walkTemplate(x.ElseList, scoped, add, untraceable)
+	case *parse.TemplateNode:
+		walkTemplate(x.Pipe, scoped, add, untraceable)
+	}
 }
 
 // Order returns nodes in topological order (Kahn's algorithm, stable by declaration order).

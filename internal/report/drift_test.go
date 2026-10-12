@@ -73,7 +73,7 @@ func TestAddCoverageCountsCalledOperationsPerSource(t *testing.T) {
 	}
 
 	var out strings.Builder
-	printDrift(&out, r.Drift)
+	printDrift(&out, r.Drift, PrintOptions{})
 	for _, want := range []string{"api: 1 of 3 published operation(s) exercised (33%)", "not called: GET /empty", "other: 1 of 1"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())
@@ -134,7 +134,7 @@ func TestAddSpecDriftMarksCalledOperationsAndFailsOnThreshold(t *testing.T) {
 	var out strings.Builder
 	r = mk()
 	AddSpecDrift(r, drifts(), "breaking")
-	printDrift(&out, r.Drift)
+	printDrift(&out, r.Drift, PrintOptions{})
 	for _, want := range []string{"Spec drift: FAIL  api vs baseline base.json: 2 breaking, 1 to review, 1 compatible (1 breaking in operations this run called)", "*[breaking] GET /users/{id}", " [breaking] GET /gone", "(* = an operation this run called)"} {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("missing %q in:\n%s", want, out.String())

@@ -35,7 +35,7 @@ func main() { os.Exit(run(os.Args[1:])) }
 
 func run(args []string) int {
 	if len(args) == 0 || args[0] == "-h" || args[0] == "--help" {
-		fmt.Fprintln(os.Stderr, "usage: sleuth <run|validate|scaffold|serve|diff|snapshot> [flags] ...")
+		fmt.Fprintln(os.Stderr, "usage: sleuth <run|validate|scaffold|serve|diff|snapshot|coverage> [flags] ...")
 		return 2
 	}
 	cmd := args[0]
@@ -47,6 +47,9 @@ func run(args []string) int {
 	}
 	if cmd == "diff" {
 		return diffSpecs(args[1:])
+	}
+	if cmd == "coverage" {
+		return coverageCmd(args[1:])
 	}
 	if cmd == "snapshot" {
 		return snapshotSpec(args[1:])
@@ -61,11 +64,17 @@ func run(args []string) int {
 	force := fs.Bool("force", false, "with -record-shapes: replace an existing snapshot (the old one is kept as FILE.prev) or record from a failed run")
 	shapeFail := fs.String("shape-drift-fail", "", "fail when responses differ from the snapshot by at least this severity: breaking | any (default: report only)")
 	runTimeout := fs.Duration("timeout", 0, "stop the whole run after this long (e.g. 10m): work in flight is stopped, unstarted nodes are skipped, exit 3")
+	defaultCoverage := report.CoverageList
+	if os.Getenv("CI") == "true" { // set by GitHub Actions, GitLab CI and most CI systems
+		defaultCoverage = report.CoverageCount
+	}
+	coverageMode := fs.String("coverage", defaultCoverage, "how much registry coverage the printed report shows: list | count | off (default count when CI=true); the evidence always has all of it")
 	junitPath := fs.String("junit", "", "also write the results as JUnit XML to this file, for CI")
 	specFail := fs.String("spec-drift-fail", "", "fail when a contract source differs from its saved baseline by at least this severity: breaking | review (default: report only)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") ||
 		(*shapeFail != "" && *shapeFail != "breaking" && *shapeFail != "any") || (*shapeFail != "" && *shapesPath == "") ||
-		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 {
+		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 ||
+		(*coverageMode != report.CoverageList && *coverageMode != report.CoverageCount && *coverageMode != report.CoverageOff) {
 		fmt.Fprintf(os.Stderr, "usage: sleuth %s [flags] <flow.yaml>\n", cmd)
 		return 2
 	}
@@ -133,7 +142,7 @@ func run(args []string) int {
 			}
 		}
 		var printed strings.Builder
-		report.Print(&printed, r)
+		report.PrintWith(&printed, r, report.PrintOptions{Coverage: *coverageMode})
 		fmt.Print(report.MaskText(printed.String(), append(known, secrets...)))
 		fmt.Println("evidence:", out)
 		if *recordShapes != "" {

@@ -98,13 +98,23 @@ the suite; five consecutive `e2e-race` runs passed; the Postgres scenarios pass 
 
 Not covered end to end: MongoDB nodes (unit and live tests cover them) and the `serve` dashboard (its own tests).
 
+## After the external review (2026-10-12)
+
+A critical review of the design was checked against the code. Fixed: secrets printed unmasked in the report and error
+messages, and leaking in their percent-encoded form into evidence; OpenAPI 3.0 boolean `exclusiveMinimum` /
+`exclusiveMaximum` making schemas uncompilable. Added: JUnit XML output (`-junit`) and a run-wide timeout (`-timeout`)
+that stops work in flight. Still to do from that review, in order: `-spec-drift-fail called-breaking` and a printed diff
+on `snapshot -force`; exact numbers in bodies, args and transforms; opt-in retries for idempotent requests; teardown
+nodes; a `graph` command showing declared vs inferred edges; a host allowlist for the dashboard; a "when not to use this"
+section and a flow-schema versioning policy; a design note on includes and data-driven flows.
+
 ## Milestone 3 — Close the known limits
 
 In rough order of value:
 
 1. **Contracts on db polls** are not meaningful (there is no HTTP contract), so instead make the README say so
    explicitly rather than listing it as a gap.
-2. **Coverage threshold** (`--min-coverage`, 0005 item 1): opt-in gate on registry coverage.
+2. ~~**Coverage threshold**~~ — done as `sleuth coverage -min N`, which also combines coverage across flows.
 3. **Secrets from a file or a vault** behind one interface (`env` stays the default). Pick one backend to start.
 4. **Other SQL databases** only if a real flow needs one; the subquery/read-only-transaction approach is
    Postgres-specific and has to be re-proven per engine.

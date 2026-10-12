@@ -124,6 +124,9 @@ type SourceCoverage struct {
 	Total     int      `json:"total"`
 	Exercised int      `json:"exercised"`
 	Untested  []string `json:"untested,omitempty"` // "METHOD /path", sorted
+	// Called lists the operations exercised, so coverage from several runs can be combined
+	// exactly (see CombineCoverage).
+	Called []string `json:"called,omitempty"`
 }
 
 type DriftFinding struct {
@@ -215,11 +218,13 @@ func AddCoverage(r *Run, all map[string][]string) {
 		for _, op := range all[name] {
 			if called[name][op] {
 				sc.Exercised++
+				sc.Called = append(sc.Called, op)
 			} else {
 				sc.Untested = append(sc.Untested, op)
 			}
 		}
 		sort.Strings(sc.Untested)
+		sort.Strings(sc.Called)
 		r.Drift.Sources = append(r.Drift.Sources, sc)
 	}
 }
@@ -268,7 +273,7 @@ func AddSpecDrift(r *Run, drifts []SpecDrift, failOn string) {
 const maxUntestedShown = 15
 
 // printDrift renders the drift section of the CLI report.
-func printDrift(w io.Writer, d *DriftSummary) {
+func printDrift(w io.Writer, d *DriftSummary, o PrintOptions) {
 	if d == nil {
 		return
 	}
@@ -329,11 +334,17 @@ func printDrift(w io.Writer, d *DriftSummary) {
 		}
 	}
 	for _, sc := range d.Sources {
+		if o.Coverage == CoverageOff {
+			break
+		}
 		pct := 100
 		if sc.Total > 0 {
 			pct = sc.Exercised * 100 / sc.Total
 		}
 		fmt.Fprintf(w, "Registry coverage: %s: %d of %d published operation(s) exercised (%d%%)\n", sc.Source, sc.Exercised, sc.Total, pct)
+		if o.Coverage == CoverageCount {
+			continue
+		}
 		for i, op := range sc.Untested {
 			if i == maxUntestedShown {
 				fmt.Fprintf(w, "  ... and %d more (all listed in the evidence JSON)\n", len(sc.Untested)-maxUntestedShown)

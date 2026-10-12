@@ -24,6 +24,7 @@ Commands:
 | `sleuth run [-env env.yaml] [-out evidence.json] [--parallel N] [-spec-drift-fail breaking\|review] <flow>` | Run a flow; `--parallel` runs up to N independent nodes at once (default 1); `-spec-drift-fail` fails the run if the live spec has drifted from its saved baseline; `-shapes` / `-record-shapes` / `-shape-drift-fail` compare with or record a [behavioural snapshot](#behavioural-snapshots) |
 | `sleuth snapshot -env env.yaml -source NAME [-out file] [-force]` | Save a contract source's live OpenAPI document as its baseline, for runs to compare against |
 | `sleuth diff [-fail-on breaking\|review\|never] [-json] OLD NEW` | Compare two versions of an OpenAPI document and list what would break a client written against the old one |
+| `sleuth coverage [-min N] [-list] [-json\|-markdown] evidence.json...` | Combine registry coverage across several runs' evidence; `-min` exits 1 if a contract is below that percentage |
 | `sleuth serve [-dir flows] [-env default.env.yaml] [-addr 127.0.0.1:8787]` | Local web dashboard: pick a flow, run it (optionally in parallel), watch it live; each flow uses its paired `<name>.env.yaml` |
 | `sleuth scaffold -source NAME (-env env.yaml \| -spec openapi.json) [-list] ["GET /path"]` | Generate a starter node from an OpenAPI operation |
 
@@ -200,6 +201,17 @@ different: `nullable` (including next to a `$ref`, an `allOf` or an `enum`) and 
   operation no flow calls is one nobody checks against the live service, so it can drift unnoticed. This is
   informational: it never fails a run. `sleuth scaffold -list` shows what a spec publishes; scaffold a node for each gap.
 
+  `-coverage count` prints only the counts (the default when `CI=true`, which GitHub Actions, GitLab and most CI
+  systems set), `-coverage off` nothing, and `-coverage list` the operations no step called too. The evidence always
+  has the full list. Coverage from several flows is combined with `sleuth coverage`, which reads their evidence files:
+
+      sleuth coverage evidence/*.json                    # "api: 13 of 96 operation(s) exercised (13%) by ..."
+      sleuth coverage -min 25 evidence/*.json            # exit 1 if any contract is below 25%
+      sleuth coverage -markdown -list evidence/*.json >> "$GITHUB_STEP_SUMMARY"
+
+  An operation counts as exercised if any of the runs called it. Runs that used no contract are noted and skipped, and
+  if the runs saw different versions of a contract that is noted too. `-json` prints the result as data.
+
 `sleuth scaffold` prints a starter request node and a status assertion for one operation, with path parameters as
 `{{ .env.<param> }}`, required query/header parameters, and a body skeleton built from the required properties.
 Optional auth headers are listed as comments rather than emitted.
@@ -261,6 +273,18 @@ Failed steps carry an `error_kind`:
 | `timeout` | a poll's condition never became true within its window |
 | `infrastructure` | no usable answer: timeout, connection refused, DNS, unreachable database |
 | `spec` | the flow itself is broken: bad template, regex, URL, SQL, unknown connection |
+
+### For CI: JUnit and a run timeout
+
+`-junit results.xml` also writes the results as JUnit XML, which most CI systems read. Each step is a test case: a
+failed check, contract or poll is a `<failure>`, an unreachable system or a broken flow is an `<error>`, a skipped step
+is `<skipped>`, and the body of a failure holds the request, the response status and the checks that failed. Verdicts no
+single step carries (spec drift against a baseline, behaviour drift against a snapshot, the run's timeout) are extra
+test cases, so a run that exits non-zero never shows as all green. Secrets are masked in it as everywhere else.
+
+`-timeout 10m` bounds the whole run. When it passes, requests, database queries and poll waits in flight are stopped,
+nodes not yet started are skipped, the evidence records `timed_out`, and the run exits 3 (the system did not finish in
+time). Without it, only each node's own timeout applies.
 
 ### Exit codes
 

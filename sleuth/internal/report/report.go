@@ -203,8 +203,24 @@ func replaceAll(s string, forms []string) string {
 	return s
 }
 
+// How much of the registry-coverage section the printed report shows. The evidence file
+// always has all of it.
+const (
+	CoverageList  = "list"  // the counts, and the operations no step called (the default)
+	CoverageCount = "count" // only the counts: for CI logs
+	CoverageOff   = "off"   // nothing
+)
+
+// PrintOptions tune the printed report.
+type PrintOptions struct {
+	Coverage string // CoverageList (default), CoverageCount or CoverageOff
+}
+
 // Print renders a human-readable summary.
-func Print(w io.Writer, r *Run) {
+func Print(w io.Writer, r *Run) { PrintWith(w, r, PrintOptions{}) }
+
+// PrintWith is Print with options.
+func PrintWith(w io.Writer, r *Run, o PrintOptions) {
 	fmt.Fprintf(w, "Flow: %s  [%s]\n\n", r.Flow, strings.ToUpper(r.Status))
 	if r.TimedOut {
 		fmt.Fprintf(w, "Run stopped: its timeout (%s) was reached. Steps in progress were stopped and the rest were not started.\n\n", r.Timeout)
@@ -250,6 +266,6 @@ func Print(w io.Writer, r *Run) {
 			}
 		}
 	}
-	printDrift(w, r.Drift)
+	printDrift(w, r.Drift, o)
 	fmt.Fprintf(w, "\n%d steps in %dms\n", len(r.Steps), r.DurationMs)
 }

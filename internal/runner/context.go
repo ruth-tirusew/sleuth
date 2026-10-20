@@ -3,7 +3,10 @@ package runner
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
+	"errors"
 	"fmt"
+	"math/big"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -11,6 +14,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -161,6 +165,22 @@ type Context struct {
 	// run is cancelled when the run's overall timeout passes. Every request, query and poll
 	// wait is bound to it, so work in flight stops instead of running on.
 	run context.Context
+	// grace bounds the finally nodes of a run, which must still run after the run's timeout.
+	grace time.Duration
+}
+
+// interrupted is true when the run context ended because the caller cancelled it (Ctrl-C),
+// not because the run's timeout passed.
+func (c *Context) interrupted() bool {
+	return errors.Is(context.Cause(c.runCtx()), context.Canceled)
+}
+
+// stopReason says why the run context ended, for step messages.
+func (c *Context) stopReason() string {
+	if c.interrupted() {
+		return "the run was interrupted"
+	}
+	return "the run's timeout was reached"
 }
 
 // runCtx is the run-wide context (never nil).
@@ -189,7 +209,8 @@ func NewContext(env *EnvConfig) (*Context, []string, error) {
 		}
 	}
 	c := &Context{data: map[string]any{
-		"env": vars, "secrets": secrets, "nodes": map[string]any{},
+		"env": vars, "secrets": secrets, "nodes": map[string]any{}, "params": map[string]any{},
+		"run": map[string]any{"id": ""},
 	}}
 	return c, secretValues, nil
 }
@@ -294,4 +315,22 @@ func (c *Context) RenderString(s string) (string, error) {
 		return "", err
 	}
 	return fmt.Sprint(r), nil
+}
+
+var runIDRe = regexp.MustCompile(`^[A-Za-z0-9_-]{1,32}$`)
+
+// NewRunID returns eight random decimal digits, which fit places that want a number (a phone
+// suffix, an account) as well as a name.
+func NewRunID() string {
+	n, err := rand.Int(rand.Reader, big.NewInt(100000000))
+	if err != nil {
+		return fmt.Sprintf("%08d", time.Now().UnixNano()%100000000)
+	}
+	return fmt.Sprintf("%08d", n.Int64())
+}
+
+func (c *Context) setRunID(id string) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.data["run"] = map[string]any{"id": id}
 }

@@ -15,7 +15,17 @@ import (
 // unloadable source is a setup error: the run's verdicts would be meaningless.
 func loadContracts(f *flow.Flow, env *EnvConfig) (map[string]*registry.Spec, error) {
 	specs := map[string]*registry.Spec{}
+	return specs, addContracts(f, env, specs)
+}
+
+// addContracts loads the contract sources a flow uses, and those of its subflows.
+func addContracts(f *flow.Flow, env *EnvConfig, specs map[string]*registry.Spec) error {
 	for _, n := range f.Nodes {
+		if n.Sub != nil {
+			if err := addContracts(n.Sub, env, specs); err != nil {
+				return fmt.Errorf("node %s: %w", n.ID, err)
+			}
+		}
 		if n.Contract == nil {
 			continue
 		}
@@ -25,11 +35,11 @@ func loadContracts(f *flow.Flow, env *EnvConfig) (map[string]*registry.Spec, err
 		}
 		sp, err := LoadContract(env, src)
 		if err != nil {
-			return nil, fmt.Errorf("node %s: %w", n.ID, err)
+			return fmt.Errorf("node %s: %w", n.ID, err)
 		}
 		specs[src] = sp
 	}
-	return specs, nil
+	return nil
 }
 
 // LoadContract resolves a contract source through the env file and loads it.

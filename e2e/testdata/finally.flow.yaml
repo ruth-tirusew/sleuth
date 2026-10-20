@@ -1,0 +1,15 @@
+version: 1
+name: finally
+description: The main flow fails, and the cleanup node still runs after it.
+nodes:
+  - id: health
+    kind: request
+    request: {url: "{{ .env.base_url }}/health"}
+  - id: must_be_teapot
+    kind: assertion
+    needs: [health]
+    assert: [{path: nodes.health.response.status, equals: 418}]
+finally:
+  - id: tidy
+    kind: request
+    request: {url: "{{ .env.base_url }}/health"}

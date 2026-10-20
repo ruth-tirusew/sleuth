@@ -29,9 +29,13 @@ type Run struct {
 	DurationMs int64     `json:"duration_ms"`
 	Parallel   int       `json:"parallel,omitempty"` // max nodes run at once; absent when serial
 	// TimedOut is set when the run's overall timeout (Timeout) stopped it before it finished.
-	TimedOut bool   `json:"timed_out,omitempty"`
-	Timeout  string `json:"timeout,omitempty"`
-	Steps    []Step `json:"steps"`
+	// RunID is the value of {{ .run.id }} in this run's templates.
+	RunID string `json:"run_id,omitempty"`
+	// Interrupted is set when the run was stopped by Ctrl-C or SIGTERM. Cleanup still ran.
+	Interrupted bool   `json:"interrupted,omitempty"`
+	TimedOut    bool   `json:"timed_out,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+	Steps       []Step `json:"steps"`
 	// Drift summarises contract disagreements across the run; absent when no step used a contract.
 	Drift *DriftSummary `json:"drift,omitempty"`
 }
@@ -52,7 +56,15 @@ type Step struct {
 	// was asked to capture shapes. It holds no values.
 	Shape  *shape.Entry   `json:"shape,omitempty"`
 	Output map[string]any `json:"output,omitempty"`
-	Error  string         `json:"error,omitempty"`
+	// Flow, Params and Children describe a flow node: the file it ran, what it was called with,
+	// and the steps inside it (their ids are local; Flatten gives them path ids like auth/login).
+	Flow     string         `json:"flow,omitempty"`
+	Params   map[string]any `json:"params,omitempty"`
+	Children []Step         `json:"children,omitempty"`
+	// Cleanup marks a step run from a finally: block. Its failure fails the run but is reported
+	// as kind "cleanup" so it never stands in for the failure the test was about.
+	Cleanup bool   `json:"cleanup,omitempty"`
+	Error   string `json:"error,omitempty"`
 	// ErrorKind is set on failed steps: assertion, infrastructure or spec.
 	ErrorKind string `json:"error_kind,omitempty"`
 }
@@ -222,50 +234,73 @@ func Print(w io.Writer, r *Run) { PrintWith(w, r, PrintOptions{}) }
 // PrintWith is Print with options.
 func PrintWith(w io.Writer, r *Run, o PrintOptions) {
 	fmt.Fprintf(w, "Flow: %s  [%s]\n\n", r.Flow, strings.ToUpper(r.Status))
+	if r.Interrupted {
+		fmt.Fprint(w, "Run interrupted: steps in progress were stopped and the rest were not started. Cleanup (finally) still ran.\n\n")
+	}
 	if r.TimedOut {
 		fmt.Fprintf(w, "Run stopped: its timeout (%s) was reached. Steps in progress were stopped and the rest were not started.\n\n", r.Timeout)
 	}
 	icon := map[string]string{Passed: "✔", Failed: "✘", Skipped: "–"}
 	for _, s := range r.Steps {
-		fmt.Fprintf(w, " %s %-20s %-10s %5dms", icon[s.Status], s.ID, s.Kind, s.DurationMs)
-		if s.Response != nil {
-			fmt.Fprintf(w, "  %s %s -> %d", s.Request.Method, s.Request.URL, s.Response.Status)
-		}
-		fmt.Fprintln(w)
-		if d := s.DB; d != nil {
-			fmt.Fprintf(w, "     db %s: %d row(s) in %dms\n", d.Connection, d.RowCount, d.DurationMs)
-		}
-		if p := s.Poll; p != nil {
-			fmt.Fprintf(w, "     poll: %d attempt(s), every %dms, timeout %dms, satisfied=%v\n", p.Attempts, p.IntervalMs, p.TimeoutMs, p.Satisfied)
-		}
-		if c := s.Contract; c != nil {
-			if len(c.Violations) == 0 {
-				fmt.Fprintf(w, "     contract %s %s: ok\n", c.Source, c.Operation)
-			}
-			for _, v := range c.Violations {
-				fmt.Fprintf(w, "     contract %s [%s] %s %s (%s)\n", c.Source, v.Where, v.Path, v.Message, c.Mode)
-			}
-			for _, n := range c.Notes {
-				fmt.Fprintf(w, "     note: %s\n", n)
-			}
-		}
-		for _, c := range s.Checks {
-			if !c.Passed {
-				fmt.Fprintf(w, "     ✘ %s %s: expected %v, got %v", c.Path, c.Op, c.Expected, c.Actual)
-				if c.Message != "" {
-					fmt.Fprintf(w, " (%s)", c.Message)
-				}
-				fmt.Fprintln(w)
-			}
-		}
-		if s.Error != "" {
-			if s.ErrorKind != "" {
-				fmt.Fprintf(w, "     error [%s]: %s\n", s.ErrorKind, s.Error)
-			} else {
-				fmt.Fprintf(w, "     error: %s\n", s.Error)
-			}
-		}
+		printStep(w, s, 0, icon)
 	}
 	printDrift(w, r.Drift, o)
-	fmt.Fprintf(w, "\n%d steps in %dms\n", len(r.Steps), r.DurationMs)
+	fmt.Fprintf(w, "\n%d steps in %dms\n", len(Leaves(r.Steps)), r.DurationMs)
+}
+
+// printStep prints one step and, indented below it, the steps of a subflow.
+func printStep(w io.Writer, s Step, depth int, icon map[string]string) {
+	in := strings.Repeat("   ", depth)
+	idw := 20 - 3*depth
+	if idw < 8 {
+		idw = 8
+	}
+	fmt.Fprintf(w, " %s%s %-*s %-10s %5dms", in, icon[s.Status], idw, s.ID, s.Kind, s.DurationMs)
+	if s.Flow != "" {
+		fmt.Fprintf(w, "  %s", s.Flow)
+	}
+	if s.Cleanup {
+		fmt.Fprint(w, "  (cleanup)")
+	}
+	if s.Response != nil {
+		fmt.Fprintf(w, "  %s %s -> %d", s.Request.Method, s.Request.URL, s.Response.Status)
+	}
+	fmt.Fprintln(w)
+	pad := in + "     "
+	if d := s.DB; d != nil {
+		fmt.Fprintf(w, "%sdb %s: %d row(s) in %dms\n", pad, d.Connection, d.RowCount, d.DurationMs)
+	}
+	if p := s.Poll; p != nil {
+		fmt.Fprintf(w, "%spoll: %d attempt(s), every %dms, timeout %dms, satisfied=%v\n", pad, p.Attempts, p.IntervalMs, p.TimeoutMs, p.Satisfied)
+	}
+	if c := s.Contract; c != nil {
+		if len(c.Violations) == 0 {
+			fmt.Fprintf(w, "%scontract %s %s: ok\n", pad, c.Source, c.Operation)
+		}
+		for _, v := range c.Violations {
+			fmt.Fprintf(w, "%scontract %s [%s] %s %s (%s)\n", pad, c.Source, v.Where, v.Path, v.Message, c.Mode)
+		}
+		for _, n := range c.Notes {
+			fmt.Fprintf(w, "%snote: %s\n", pad, n)
+		}
+	}
+	for _, c := range s.Checks {
+		if !c.Passed {
+			fmt.Fprintf(w, "%s✘ %s %s: expected %v, got %v", pad, c.Path, c.Op, c.Expected, c.Actual)
+			if c.Message != "" {
+				fmt.Fprintf(w, " (%s)", c.Message)
+			}
+			fmt.Fprintln(w)
+		}
+	}
+	if s.Error != "" {
+		if s.ErrorKind != "" {
+			fmt.Fprintf(w, "%serror [%s]: %s\n", pad, s.ErrorKind, s.Error)
+		} else {
+			fmt.Fprintf(w, "%serror: %s\n", pad, s.Error)
+		}
+	}
+	for _, c := range s.Children {
+		printStep(w, c, depth+1, icon)
+	}
 }

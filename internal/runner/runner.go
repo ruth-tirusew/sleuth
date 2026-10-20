@@ -12,6 +12,9 @@ import (
 	"sleuth/internal/report"
 )
 
+// DefaultCleanupGrace is how long finally nodes get, in total, when Options.CleanupGrace is unset.
+const DefaultCleanupGrace = 30 * time.Second
+
 type Options struct {
 	EnvName string
 	// Parallel is the maximum number of independent nodes run at once; 0 or 1 is serial.
@@ -23,6 +26,14 @@ type Options struct {
 	// waits in flight are stopped, nodes not yet started are skipped, and the run is marked
 	// timed out. Each such step fails as infrastructure: the system did not finish in time.
 	Timeout time.Duration
+	// CleanupGrace bounds the finally nodes, which run even after the run's timeout. Zero means
+	// DefaultCleanupGrace.
+	CleanupGrace time.Duration
+	// Context, if set, is the run's parent: cancelling it (Ctrl-C) stops work in flight and skips
+	// nodes not yet started, exactly as the timeout does, and finally nodes still run.
+	Context context.Context
+	// RunID is the value of {{ .run.id }}. Empty means a fresh random one; pin it to repeat a run.
+	RunID string
 	// CaptureShapes records, on each step that returned JSON, the structure of its response (or
 	// database rows) as Step.Shape, so a run can be compared with, or recorded as, a shape snapshot.
 	CaptureShapes bool
@@ -49,6 +60,8 @@ type EventNode struct {
 	ID    string   `json:"id"`
 	Kind  string   `json:"kind"`
 	Needs []string `json:"needs,omitempty"` // needs: plus nodes.<id> references
+	// Cleanup marks a finally node: it runs after the main nodes, whatever their outcome.
+	Cleanup bool `json:"cleanup,omitempty"`
 }
 
 // Run executes the flow. It returns an error only for setup problems
@@ -67,6 +80,21 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	if err != nil {
 		return nil, nil, err
 	}
+	if len(f.Params) > 0 { // run on its own, a flow that takes params uses their defaults
+		params, err := bindParams(f, ctx, nil)
+		if err != nil {
+			return nil, nil, err
+		}
+		ctx.setParams(params)
+	}
+	ctx.grace = opts.CleanupGrace
+	runID := opts.RunID
+	if runID == "" {
+		runID = NewRunID()
+	} else if !runIDRe.MatchString(runID) {
+		return nil, nil, fmt.Errorf("run id %q must match %s", runID, runIDRe)
+	}
+	ctx.setRunID(runID)
 	specs, err := loadContracts(f, env)
 	if err != nil {
 		return nil, nil, err
@@ -81,12 +109,17 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	}
 	conns := newDBConns(workers)
 	defer conns.close()
+	base := opts.Context
+	if base == nil {
+		base = context.Background()
+	}
+	ctx.run = base
 	if opts.Timeout > 0 {
-		rctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+		rctx, cancel := context.WithTimeout(base, opts.Timeout)
 		defer cancel()
 		ctx.run = rctx
 	}
-	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
+	run := &report.Run{Flow: f.Name, Env: opts.EnvName, RunID: runID, Status: report.Passed, StartedAt: time.Now().UTC()}
 	if workers > 1 {
 		run.Parallel = workers
 	}
@@ -116,6 +149,9 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		plan := make([]EventNode, len(order))
 		for i, n := range order {
 			plan[i] = EventNode{ID: n.ID, Kind: n.Kind, Needs: n.Deps()}
+		}
+		for _, n := range f.Finally {
+			plan = append(plan, EventNode{ID: n.ID, Kind: n.Kind, Needs: n.Deps(), Cleanup: true})
 		}
 		emit(Event{Type: "run_start", Nodes: plan})
 	}
@@ -180,7 +216,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 			ready = ready[1:]
 			if ctx.runCtx().Err() != nil { // past the run's timeout: do not start anything new
 				steps[i] = report.Step{ID: order[i].ID, Kind: order[i].Kind, StartedAt: time.Now().UTC(), Status: report.Skipped,
-					Error: fmt.Sprintf("not started: the run's timeout (%s) was reached", opts.Timeout)}
+					Error: "not started: " + ctx.stopReason()}
 				finish(i)
 				continue
 			}
@@ -200,15 +236,23 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	close(jobs)
 
 	run.Steps = steps
-	if ctx.runCtx().Err() != nil {
-		run.TimedOut = true
-		run.Timeout = opts.Timeout.String()
+	if ctx.runCtx().Err() != nil { // judged before cleanup, which runs under its own deadline
 		run.Status = report.Failed
+		if ctx.interrupted() {
+			run.Interrupted = true
+		} else {
+			run.TimedOut = true
+			run.Timeout = opts.Timeout.String()
+		}
+	}
+	run.Steps = append(run.Steps, runFinally(ctx, env, conns, f, steps, specs, emit)...)
+	for _, s := range report.Flatten(run.Steps) {
+		if s.Cleanup && s.Status == report.Failed {
+			run.Status = report.Failed // state may have leaked, even though the main nodes passed
+		}
 	}
 	if opts.CaptureShapes {
-		for i := range run.Steps {
-			run.Steps[i].Shape = stepShape(&run.Steps[i])
-		}
+		captureShapes(run.Steps)
 	}
 	run.DurationMs = time.Since(run.StartedAt).Milliseconds()
 	report.SummarizeDrift(run)
@@ -235,6 +279,8 @@ func execNode(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, specs m
 		out, err = execRequest(ctx, n, &step, specs)
 	case flow.KindPoll:
 		out, err = execPoll(ctx, env, conns, n, &step, specs)
+	case flow.KindFlow:
+		out, err = execFlow(ctx, env, conns, n, &step, specs)
 	case flow.KindDB:
 		out, err = execDB(ctx, env, conns, n, &step)
 	case flow.KindAssertion:
@@ -250,11 +296,19 @@ func execNode(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, specs m
 		if ctx.runCtx().Err() != nil && step.ErrorKind != KindSpec {
 			// whatever the step was doing when the run's timeout passed, it did not finish in time
 			step.ErrorKind = KindInfra
-			step.Error = "stopped: the run's timeout was reached (" + step.Error + ")"
+			step.Error = "stopped: " + ctx.stopReason() + " (" + step.Error + ")"
 		}
 	} else {
 		step.Status = report.Passed
 		ctx.SetNode(n.ID, out)
 	}
 	return step
+}
+
+// captureShapes records the shape of each step's response, inside subflows too.
+func captureShapes(steps []report.Step) {
+	for i := range steps {
+		steps[i].Shape = stepShape(&steps[i])
+		captureShapes(steps[i].Children)
+	}
 }

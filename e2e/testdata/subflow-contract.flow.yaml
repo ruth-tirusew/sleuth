@@ -1,0 +1,7 @@
+version: 1
+name: subflow-contract
+description: A call inside a subflow breaks the contract; the drift is reported under the inner step's path.
+nodes:
+  - id: inner
+    kind: flow
+    flow: _legacy.flow.yaml

@@ -297,8 +297,17 @@ function renderDetail() {
     h("table", {}, h("tr", {}, h("th", {}, "#"), h("th", {}, "at"), h("th", {}, "status"), h("th", {}, "passed"), h("th", {}, "next wait"), h("th", {}, "error")),
       s.poll.history.map(a => h("tr", {}, h("td", {}, a.n), h("td", {}, ms(a.elapsed_ms)), h("td", {}, a.status || (a.row_count != null ? a.row_count + " rows" : "")), h("td", {}, a.passed ? "yes" : "no"), h("td", {}, a.delay_ms ? ms(a.delay_ms) : ""), h("td", {}, a.error || ""))))));
   if (s.db) parts.push(kv("Database " + s.db.connection + " (" + s.db.type + ") — " + s.db.row_count + " row(s)", h("pre", {}, s.db.query + (s.db.args ? "\n\nargs: " + pretty(s.db.args) : "") + (s.db.rows ? "\n\n" + pretty(s.db.rows) : ""))));
+  if (s.params) parts.push(kv("Params", h("pre", {}, pretty(s.params))));
+  if (s.children && s.children.length) parts.push(kv("Steps inside " + (s.flow || "the subflow"), h("table", {}, h("tr", {}, h("th", {}, ""), h("th", {}, "step"), h("th", {}, "kind"), h("th", {}, "time"), h("th", {}, "detail")), childRows(s.children, 0))));
   if (s.output) parts.push(kv("Output", h("pre", {}, pretty(s.output))));
   box.replaceChildren(h("div", { class: "card detail" }, parts.flat()));
+}
+
+function childRows(steps, depth) {
+  return steps.flatMap(c => [
+    h("tr", {}, h("td", {}, pill(c.status, "")), h("td", { class: "needs", style: "padding-left:" + (8 + depth * 16) + "px" }, c.id), h("td", {}, c.kind), h("td", {}, ms(c.duration_ms)),
+      h("td", {}, c.error ? (c.error_kind ? "[" + c.error_kind + "] " : "") + c.error : (c.response ? c.request.method + " " + c.response.status : ""))),
+    ...(c.children ? childRows(c.children, depth + 1) : [])]);
 }
 
 function driftCard(d) {

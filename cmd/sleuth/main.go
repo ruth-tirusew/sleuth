@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,8 +20,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"sleuth/internal/flow"
@@ -64,6 +67,8 @@ func run(args []string) int {
 	force := fs.Bool("force", false, "with -record-shapes: replace an existing snapshot (the old one is kept as FILE.prev) or record from a failed run")
 	shapeFail := fs.String("shape-drift-fail", "", "fail when responses differ from the snapshot by at least this severity: breaking | any (default: report only)")
 	runTimeout := fs.Duration("timeout", 0, "stop the whole run after this long (e.g. 10m): work in flight is stopped, unstarted nodes are skipped, exit 3")
+	runID := fs.String("run-id", "", "value of {{ .run.id }} (default: eight random digits); pin it to repeat a run with the same data")
+	cleanupGrace := fs.Duration("cleanup-timeout", 0, "time allowed for finally: nodes, which run even after -timeout (default 30s)")
 	defaultCoverage := report.CoverageList
 	if os.Getenv("CI") == "true" { // set by GitHub Actions, GitLab CI and most CI systems
 		defaultCoverage = report.CoverageCount
@@ -73,7 +78,7 @@ func run(args []string) int {
 	specFail := fs.String("spec-drift-fail", "", "fail when a contract source differs from its saved baseline by at least this severity: breaking | review (default: report only)")
 	if err := fs.Parse(args[1:]); err != nil || fs.NArg() != 1 || *parallel < 1 || (*specFail != "" && *specFail != "breaking" && *specFail != "review") ||
 		(*shapeFail != "" && *shapeFail != "breaking" && *shapeFail != "any") || (*shapeFail != "" && *shapesPath == "") ||
-		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 ||
+		((*mergeShapes || *force) && *recordShapes == "") || *runTimeout < 0 || *cleanupGrace < 0 ||
 		(*coverageMode != report.CoverageList && *coverageMode != report.CoverageCount && *coverageMode != report.CoverageOff) {
 		fmt.Fprintf(os.Stderr, "usage: sleuth %s [flags] <flow.yaml>\n", cmd)
 		return 2
@@ -91,6 +96,7 @@ func run(args []string) int {
 			ids[i] = n.ID
 		}
 		fmt.Printf("OK: %s (%s)\n", f.Name, strings.Join(ids, " -> "))
+		printSubflows(f, "  ")
 		if *parallel > 1 {
 			printWaves(f, *parallel)
 		}
@@ -114,11 +120,24 @@ func run(args []string) int {
 				return fail("error: ", err)
 			}
 		}
-		flowBytes, _ := os.ReadFile(fs.Arg(0))
-		flowSHA := fmt.Sprintf("%x", sha256.Sum256(flowBytes))
+		flowSHA := flowFingerprint(f)
 		envName := strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath))
-		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
-			CaptureShapes: snap != nil || *recordShapes != "", Timeout: *runTimeout})
+		// Ctrl-C (or SIGTERM) stops the run but not its cleanup; a second one ends the process.
+		sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		finished := make(chan struct{})
+		go func() {
+			<-sigCtx.Done()
+			select {
+			case <-finished: // the run ended on its own; stopSignals cancelled the context
+			default:
+				fmt.Fprintln(os.Stderr, "interrupted: stopping, then running cleanup (press Ctrl-C again to quit now)")
+				stopSignals()
+			}
+		}()
+		r, secrets, err := runner.Run(f, env, runner.Options{Context: sigCtx, RunID: *runID, EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
+			CaptureShapes: snap != nil || *recordShapes != "", Timeout: *runTimeout, CleanupGrace: *cleanupGrace})
+		close(finished)
+		stopSignals()
 		if err != nil {
 			return fail("error: ", err)
 		}
@@ -361,6 +380,9 @@ func printWaves(f *flow.Flow, n int) {
 }
 
 func exitCode(r *report.Run) int {
+	if r.Interrupted {
+		return 130 // the conventional code for a run ended by Ctrl-C
+	}
 	kinds := map[string]bool{}
 	if r.Drift != nil && r.Drift.Behaviour != nil && r.Drift.Behaviour.Failing {
 		kinds[runner.KindContract] = true // the system answered, but not as it did when the snapshot was recorded
@@ -372,7 +394,7 @@ func exitCode(r *report.Run) int {
 			}
 		}
 	}
-	for _, s := range r.Steps {
+	for _, s := range report.Flatten(r.Steps) {
 		if s.Status == report.Failed {
 			kinds[s.ErrorKind] = true
 		}
@@ -384,6 +406,8 @@ func exitCode(r *report.Run) int {
 		return 1
 	case kinds[runner.KindInfra]:
 		return 3
+	case kinds[runner.KindCleanup]:
+		return 1 // only cleanup failed: state may have leaked, so not safe to retry blindly
 	}
 	return 0
 }
@@ -438,4 +462,32 @@ func scaffold(args []string) int {
 	}
 	fmt.Print(spec.ScaffoldNode(op, *source, nodeID))
 	return 0
+}
+
+// flowFingerprint hashes the flow's file and the files of its subflows, so a snapshot notices a
+// change in any of them. For a flow with no subflows it is the hash of the file itself.
+func flowFingerprint(f *flow.Flow) string {
+	h := sha256.New()
+	for _, p := range f.Files {
+		b, _ := os.ReadFile(p)
+		h.Write(b)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
+}
+
+// printSubflows lists the flows a flow includes, indented by nesting.
+func printSubflows(f *flow.Flow, indent string) {
+	for _, n := range f.Nodes {
+		if n.Sub == nil {
+			continue
+		}
+		var ids []string
+		if order, err := n.Sub.Order(); err == nil {
+			for _, m := range order {
+				ids = append(ids, m.ID)
+			}
+		}
+		fmt.Printf("%s%s -> %s (%s)\n", indent, n.ID, n.Flow, strings.Join(ids, " -> "))
+		printSubflows(n.Sub, indent+"  ")
+	}
 }

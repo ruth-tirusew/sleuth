@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 	"text/template"
 	"text/template/parse"
@@ -20,6 +22,11 @@ const (
 	KindTransform = "transform"
 	KindPoll      = "poll"
 	KindDB        = "db"
+	// KindFlow runs another flow file as one node: params in, outputs out, internals hidden.
+	KindFlow = "flow"
+
+	// MaxSubflowDepth bounds how deeply flows may include flows.
+	MaxSubflowDepth = 8
 )
 
 type Flow struct {
@@ -27,6 +34,53 @@ type Flow struct {
 	Name        string `yaml:"name" json:"name"`
 	Description string `yaml:"description,omitempty" json:"description,omitempty"`
 	Nodes       []Node `yaml:"nodes" json:"nodes"`
+	// Finally are cleanup nodes. They run after every main node has finished, in dependency order
+	// and one at a time, whether the main nodes passed or not, and are reported as cleanup steps.
+	// A cleanup node may read main nodes (nodes.<id>) and earlier cleanup nodes; a main node
+	// cannot read a cleanup node. One whose dependencies did not pass is skipped: there is
+	// nothing to clean up. Cleanup is API-only (request, poll on a request, transform).
+	Finally []Node `yaml:"finally,omitempty" json:"finally,omitempty"`
+	// Params are the inputs a flow takes when another flow runs it as a subflow. A param with a
+	// default is optional; the others are required.
+	Params []Param `yaml:"params,omitempty" json:"params,omitempty"`
+	// Outputs are what a subflow hands back to its caller, as nodes.<id>.out.<name>. Values are
+	// templates, evaluated once every node has finished.
+	Outputs map[string]any `yaml:"outputs,omitempty" json:"outputs,omitempty"`
+
+	// Files lists every file this flow was loaded from: itself first, then its subflows. Set by Load.
+	Files []string `yaml:"-" json:"-"`
+}
+
+// Param declares one input of a flow. In YAML it is either a bare name or
+// {name: x, default: y}.
+type Param struct {
+	Name       string `yaml:"name" json:"name"`
+	Default    any    `yaml:"default,omitempty" json:"default,omitempty"`
+	HasDefault bool   `yaml:"-" json:"-"`
+}
+
+func (p *Param) UnmarshalYAML(n *yaml.Node) error {
+	if n.Kind == yaml.ScalarNode {
+		p.Name = n.Value
+		return nil
+	}
+	if n.Kind != yaml.MappingNode {
+		return fmt.Errorf("line %d: a param is a name or a {name, default} mapping", n.Line)
+	}
+	for i := 0; i+1 < len(n.Content); i += 2 {
+		switch n.Content[i].Value {
+		case "name":
+			p.Name = n.Content[i+1].Value
+		case "default":
+			p.HasDefault = true
+			if err := n.Content[i+1].Decode(&p.Default); err != nil {
+				return err
+			}
+		default:
+			return fmt.Errorf("line %d: field %s not found in a param", n.Content[i].Line, n.Content[i].Value)
+		}
+	}
+	return nil
 }
 
 type Node struct {
@@ -40,6 +94,12 @@ type Node struct {
 	DB        *DB        `yaml:"db,omitempty" json:"db,omitempty"`
 	// Contract (request nodes only) validates the call against a published OpenAPI document.
 	Contract *Contract `yaml:"contract,omitempty" json:"contract,omitempty"`
+	// Flow (flow nodes only) is the path of another flow file, relative to this one. Params are
+	// the values it is called with; strings may contain templates.
+	Flow   string         `yaml:"flow,omitempty" json:"flow,omitempty"`
+	Params map[string]any `yaml:"params,omitempty" json:"params,omitempty"`
+	// Sub is the loaded subflow, set by Load.
+	Sub *Flow `yaml:"-" json:"-"`
 }
 
 // Contract binds a request node to a named source from the env file's `contracts:` map.
@@ -329,7 +389,38 @@ var (
 	pathRefRe = regexp.MustCompile(`^\.?nodes\.([A-Za-z_][A-Za-z0-9_]*)`)
 )
 
+// Load reads a flow and every flow it includes. Subflow paths are relative to the including
+// file and must stay inside the directory of the top-level flow; a flow may not include
+// itself, directly or through others, and nesting is limited to MaxSubflowDepth.
 func Load(path string) (*Flow, error) {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return nil, err
+	}
+	root, err := filepath.EvalSymlinks(filepath.Dir(abs))
+	if err != nil {
+		return nil, err
+	}
+	files := map[string]bool{}
+	f, err := loadFile(path, root, nil, files)
+	if err != nil {
+		return nil, err
+	}
+	real, _ := realPath(abs)
+	var rest []string
+	for p := range files {
+		if p != real {
+			rest = append(rest, p)
+		}
+	}
+	sort.Strings(rest)
+	f.Files = append([]string{real}, rest...)
+	return f, nil
+}
+
+// loadFile reads one file (path as the caller gave it, for messages) and resolves its subflows.
+// stack holds the real paths of the files being loaded above this one.
+func loadFile(path, root string, stack []string, files map[string]bool) (*Flow, error) {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -343,7 +434,106 @@ func Load(path string) (*Flow, error) {
 	if err := f.Validate(); err != nil {
 		return nil, fmt.Errorf("invalid flow %s: %w", path, err)
 	}
+	real, err := realPath(path)
+	if err != nil {
+		return nil, err
+	}
+	files[real] = true
+	stack = append(stack, real)
+	for i := range f.Nodes {
+		n := &f.Nodes[i]
+		if n.Kind != KindFlow {
+			continue
+		}
+		sub, err := loadSub(path, root, n, stack, files)
+		if err != nil {
+			return nil, fmt.Errorf("invalid flow %s: node %s: %w", path, n.ID, err)
+		}
+		n.Sub = sub
+	}
 	return &f, nil
+}
+
+func loadSub(parent, root string, n *Node, stack []string, files map[string]bool) (*Flow, error) {
+	if filepath.IsAbs(n.Flow) {
+		return nil, fmt.Errorf("flow path %q must be relative to this file", n.Flow)
+	}
+	p := filepath.Join(filepath.Dir(parent), n.Flow)
+	real, err := realPath(p)
+	if err != nil {
+		return nil, fmt.Errorf("subflow %s: %w", n.Flow, err)
+	}
+	if rel, err := filepath.Rel(root, real); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return nil, fmt.Errorf("subflow %s is outside the directory of the top-level flow", n.Flow)
+	}
+	for _, s := range stack {
+		if s == real {
+			names := make([]string, 0, len(stack)+1)
+			for _, x := range append(append([]string(nil), stack...), real) {
+				names = append(names, filepath.Base(x))
+			}
+			return nil, fmt.Errorf("flows include themselves: %s", strings.Join(names, " -> "))
+		}
+	}
+	if len(stack) >= MaxSubflowDepth {
+		return nil, fmt.Errorf("subflows are nested more than %d deep", MaxSubflowDepth)
+	}
+	sub, err := loadFile(p, root, stack, files)
+	if err != nil {
+		return nil, err
+	}
+	if err := checkParams(sub, n); err != nil {
+		return nil, fmt.Errorf("subflow %s: %w", n.Flow, err)
+	}
+	return sub, nil
+}
+
+// realPath is the absolute path of a file with symlinks resolved, so two spellings of one file
+// compare equal and a link cannot lead out of the flow's directory.
+func realPath(p string) (string, error) {
+	abs, err := filepath.Abs(p)
+	if err != nil {
+		return "", err
+	}
+	return filepath.EvalSymlinks(abs)
+}
+
+// checkParams verifies a call against the callee's declared params: nothing unknown, nothing
+// required left out.
+func checkParams(sub *Flow, n *Node) error {
+	declared := map[string]bool{}
+	var missing []string
+	for _, p := range sub.Params {
+		declared[p.Name] = true
+		if _, ok := n.Params[p.Name]; !ok && !p.HasDefault {
+			missing = append(missing, p.Name)
+		}
+	}
+	var unknown []string
+	for k := range n.Params {
+		if !declared[k] {
+			unknown = append(unknown, k)
+		}
+	}
+	sort.Strings(unknown)
+	if len(unknown) > 0 {
+		return fmt.Errorf("unknown param(s) %s (it declares: %s)", strings.Join(unknown, ", "), paramNames(sub))
+	}
+	if len(missing) > 0 {
+		return fmt.Errorf("missing required param(s) %s", strings.Join(missing, ", "))
+	}
+	return nil
+}
+
+func paramNames(f *Flow) string {
+	if len(f.Params) == 0 {
+		return "no params"
+	}
+	names := make([]string, len(f.Params))
+	for i, p := range f.Params {
+		names[i] = p.Name
+	}
+	return strings.Join(names, ", ")
 }
 
 func (f *Flow) Validate() error {
@@ -356,8 +546,28 @@ func (f *Flow) Validate() error {
 	if len(f.Nodes) == 0 {
 		return fmt.Errorf("flow has no nodes")
 	}
+	pseen := map[string]bool{}
+	for _, p := range f.Params {
+		if !idRe.MatchString(p.Name) {
+			return fmt.Errorf("param name %q must match %s", p.Name, idRe)
+		}
+		if pseen[p.Name] {
+			return fmt.Errorf("duplicate param %q", p.Name)
+		}
+		pseen[p.Name] = true
+	}
 	seen := map[string]bool{}
-	for _, n := range f.Nodes {
+	mainIDs := map[string]bool{}
+	all := append(append([]Node{}, f.Nodes...), f.Finally...)
+	for i, n := range all {
+		if i >= len(f.Nodes) {
+			if err := n.validateCleanup(); err != nil {
+				return err
+			}
+		}
+		if n.Kind != KindFlow && (n.Flow != "" || n.Params != nil) {
+			return fmt.Errorf("node %s: flow and params are only valid on flow nodes", n.ID)
+		}
 		if _, untraceable := n.refs(); untraceable && len(n.Needs) == 0 {
 			return fmt.Errorf("node %s: a template reads .nodes in a way that cannot be traced to specific nodes (for example through a variable); list the nodes it uses under needs:", n.ID)
 		}
@@ -379,6 +589,9 @@ func (f *Flow) Validate() error {
 			return fmt.Errorf("duplicate node id %q", n.ID)
 		}
 		seen[n.ID] = true
+		if i < len(f.Nodes) {
+			mainIDs[n.ID] = true
+		}
 		switch n.Kind {
 		case KindRequest:
 			if n.Request == nil || n.Request.URL == "" {
@@ -438,12 +651,58 @@ func (f *Flow) Validate() error {
 			if n.Transform == nil || len(n.Transform.Set) == 0 {
 				return fmt.Errorf("node %s: transform.set is required", n.ID)
 			}
+		case KindFlow:
+			if n.Flow == "" {
+				return fmt.Errorf("node %s: flow is required (the path of the flow file to run)", n.ID)
+			}
+			if strings.Contains(n.Flow, "{{") {
+				return fmt.Errorf("node %s: the flow path must be a plain path, not a template (nodes are written, not computed)", n.ID)
+			}
+			for k := range n.Params {
+				if !idRe.MatchString(k) {
+					return fmt.Errorf("node %s: param name %q must match %s", n.ID, k, idRe)
+				}
+			}
 		default:
 			return fmt.Errorf("node %s: unknown kind %q", n.ID, n.Kind)
 		}
 	}
-	_, err := f.Order()
+	for name, v := range f.Outputs {
+		if !idRe.MatchString(name) {
+			return fmt.Errorf("output name %q must match %s", name, idRe)
+		}
+		var bad string
+		scanTemplates(v, func(id string) {
+			if !mainIDs[id] && bad == "" {
+				bad = id
+			}
+		}, new(bool))
+		if bad != "" {
+			return fmt.Errorf("output %s reads node %q, which does not exist", name, bad)
+		}
+	}
+	if _, err := f.Order(); err != nil {
+		return err
+	}
+	_, err := f.FinallyOrder()
 	return err
+}
+
+// validateCleanup holds what only cleanup nodes must satisfy: they change state through the
+// API, so a database node (read-only) and a subflow (which would hide what is being cleaned up)
+// are refused.
+func (n Node) validateCleanup() error {
+	switch n.Kind {
+	case KindDB:
+		return fmt.Errorf("finally node %s: db nodes are read-only and cannot clean up; use a request", n.ID)
+	case KindFlow:
+		return fmt.Errorf("finally node %s: a cleanup node cannot be a subflow; write the requests here", n.ID)
+	case KindPoll:
+		if n.Poll != nil && n.Poll.DB != nil {
+			return fmt.Errorf("finally node %s: a cleanup poll must use poll.request, not poll.db", n.ID)
+		}
+	}
+	return nil
 }
 
 // Deps returns explicit `needs` plus dependencies inferred from `nodes.<id>` references
@@ -615,16 +874,38 @@ func walkTemplate(n parse.Node, scoped bool, add func(string), untraceable *bool
 }
 
 // Order returns nodes in topological order (Kahn's algorithm, stable by declaration order).
-func (f *Flow) Order() ([]Node, error) {
+func (f *Flow) Order() ([]Node, error) { return orderNodes(f.Nodes, nil) }
+
+// FinallyOrder returns the cleanup nodes in the order they run. They may depend on main nodes
+// (already finished by then) and on earlier cleanup nodes.
+func (f *Flow) FinallyOrder() ([]Node, error) {
+	main := map[string]bool{}
+	for _, n := range f.Nodes {
+		main[n.ID] = true
+	}
+	for _, n := range f.Finally {
+		if main[n.ID] {
+			return nil, fmt.Errorf("duplicate node id %q", n.ID)
+		}
+	}
+	return orderNodes(f.Finally, main)
+}
+
+// orderNodes sorts nodes topologically. Dependencies named in done are already satisfied and
+// do not constrain the order; any other dependency must be one of nodes.
+func orderNodes(nodes []Node, done map[string]bool) ([]Node, error) {
 	byID := map[string]Node{}
 	indeg := map[string]int{}
 	rev := map[string][]string{}
-	for _, n := range f.Nodes {
+	for _, n := range nodes {
 		byID[n.ID] = n
 	}
-	for _, n := range f.Nodes {
+	for _, n := range nodes {
 		for _, d := range n.Deps() {
 			if _, ok := byID[d]; !ok {
+				if done[d] {
+					continue
+				}
 				return nil, fmt.Errorf("node %s depends on unknown node %q", n.ID, d)
 			}
 			indeg[n.ID]++
@@ -632,12 +913,12 @@ func (f *Flow) Order() ([]Node, error) {
 		}
 	}
 	var out []Node
-	done := map[string]bool{}
-	for len(out) < len(f.Nodes) {
+	placed := map[string]bool{}
+	for len(out) < len(nodes) {
 		progressed := false
-		for _, n := range f.Nodes {
-			if !done[n.ID] && indeg[n.ID] == 0 {
-				done[n.ID] = true
+		for _, n := range nodes {
+			if !placed[n.ID] && indeg[n.ID] == 0 {
+				placed[n.ID] = true
 				out = append(out, n)
 				for _, r := range rev[n.ID] {
 					indeg[r]--

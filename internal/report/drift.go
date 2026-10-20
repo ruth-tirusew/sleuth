@@ -61,7 +61,7 @@ type BehaviourInput struct {
 // changes) a difference of that severity fails the run.
 func AddBehaviourDrift(r *Run, in BehaviourInput) {
 	observed := map[string]shape.Entry{}
-	for _, s := range r.Steps {
+	for _, s := range Flatten(r.Steps) {
 		if s.Shape != nil {
 			observed[s.ID] = *s.Shape
 		}
@@ -153,7 +153,7 @@ func SummarizeDrift(r *Run) {
 	d := &DriftSummary{Findings: []DriftFinding{}}
 	used := false
 	ops := map[string]bool{}
-	for _, s := range r.Steps {
+	for _, s := range Flatten(r.Steps) {
 		c := s.Contract
 		if c == nil {
 			continue
@@ -200,7 +200,7 @@ func AddCoverage(r *Run, all map[string][]string) {
 		return
 	}
 	called := map[string]map[string]bool{}
-	for _, s := range r.Steps {
+	for _, s := range Flatten(r.Steps) {
 		if c := s.Contract; c != nil && c.Operation != "" {
 			if called[c.Source] == nil {
 				called[c.Source] = map[string]bool{}
@@ -237,7 +237,7 @@ func AddSpecDrift(r *Run, drifts []SpecDrift, failOn string) {
 		return
 	}
 	called := map[string]map[string]bool{}
-	for _, s := range r.Steps {
+	for _, s := range Flatten(r.Steps) {
 		if c := s.Contract; c != nil && c.Operation != "" {
 			if called[c.Source] == nil {
 				called[c.Source] = map[string]bool{}

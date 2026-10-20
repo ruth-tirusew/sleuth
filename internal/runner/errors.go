@@ -15,6 +15,9 @@ const (
 	KindInfra = "infrastructure"
 	// KindSpec: the flow itself is broken (bad template, regex, URL, timeout value).
 	KindSpec = "spec"
+	// KindCleanup: a finally node failed, so state the run created may have been left behind.
+	// It fails the run but ranks below every other kind.
+	KindCleanup = "cleanup"
 )
 
 type kindError struct {

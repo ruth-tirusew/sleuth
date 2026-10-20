@@ -1,0 +1,7 @@
+version: 1
+name: legacy
+nodes:
+  - id: legacy
+    kind: request
+    contract: api
+    request: {url: "{{ .env.base_url }}/legacy/7"}

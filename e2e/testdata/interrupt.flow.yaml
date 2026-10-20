@@ -1,0 +1,8 @@
+version: 1
+name: interrupt
+description: A hanging request that Ctrl-C stops, with cleanup that must still run.
+nodes:
+  - {id: hang, kind: request, request: {url: "{{ .env.base_url }}/hang"}}
+  - {id: after, kind: transform, needs: [hang], transform: {set: {x: 1}}}
+finally:
+  - {id: tidy, kind: request, request: {url: "{{ .env.base_url }}/health?run={{ .run.id }}"}}

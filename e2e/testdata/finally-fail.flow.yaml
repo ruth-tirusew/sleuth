@@ -1,0 +1,14 @@
+version: 1
+name: finally-fail
+description: Everything in the main flow passes, but a cleanup check fails, which still fails the run.
+nodes:
+  - id: health
+    kind: request
+    request: {url: "{{ .env.base_url }}/health"}
+finally:
+  - id: tidy
+    kind: request
+    request: {url: "{{ .env.base_url }}/teapot"}
+  - id: tidied
+    kind: assertion
+    assert: [{path: nodes.tidy.response.status, equals: 200}]

@@ -1,0 +1,20 @@
+version: 1
+name: login
+description: Reusable login. Takes the user name, hands back the token and user id.
+params:
+  - username
+nodes:
+  - id: call
+    kind: request
+    request:
+      method: POST
+      url: "{{ .env.base_url }}/login"
+      body: {username: "{{ .params.username }}", password: "{{ .secrets.APP_PASSWORD }}"}
+      extract: {token: body.token, user_id: body.user_id}
+  - id: ok
+    kind: assertion
+    assert:
+      - {path: nodes.call.response.status, equals: 200}
+outputs:
+  token: "{{ .nodes.call.out.token }}"
+  user_id: "{{ .nodes.call.out.user_id }}"

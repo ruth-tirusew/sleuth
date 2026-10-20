@@ -72,6 +72,7 @@ Templates (`{{ ... }}`) can read:
 | `.nodes.<id>.response.{status,headers,body,raw}` | a request node's response (`body` is absent for non-JSON) |
 | `.nodes.<id>.rows`, `.row_count` | a db node's result |
 | `.nodes.<id>.out.<name>` | values a node `extract`ed or `transform`ed |
+| `.run.id` | eight random digits, the same for the whole run (subflows and `finally:` too) and recorded in the evidence; `-run-id X` pins it to repeat a run. Use it for names, phones and keys that must be unique per run |
 
 A string that is exactly one reference (`"{{ .nodes.a.out.count }}"`) keeps its native type; anything else is
 rendered as text. An unresolved reference is an error, never an empty string.
@@ -245,7 +246,8 @@ finally:
 - Cleanup is API-only: `request`, `transform`, or a `poll` on a request. `db` nodes are read-only and subflows are
   refused. A subflow's own `finally:` runs when that subflow ends; a failed cleanup there does not skip the caller's
   later nodes.
-- Not covered yet: Ctrl-C does not run cleanup. If a target has no delete endpoint, use an isolated environment.
+- **Ctrl-C (or SIGTERM) stops the run like a timeout does, then runs cleanup**; the exit code is 130 and the evidence
+  says `interrupted`. A second Ctrl-C quits at once. If a target has no delete endpoint, use an isolated environment.
 
 ## Contracts and drift
 
@@ -370,6 +372,7 @@ time). Without it, only each node's own timeout applies.
 | 1 | an assertion, contract or poll-timeout failure |
 | 2 | usage, config, secret or flow error (results can't be trusted) |
 | 3 | infrastructure failure only (safe for CI to retry) |
+| 130 | interrupted (Ctrl-C or SIGTERM); cleanup still ran |
 
 When a run has several kinds of failure, 2 wins over 1, and 1 over 3. A run whose only failure is a `finally:` node (error kind `cleanup`) exits 1.
 
@@ -507,7 +510,6 @@ tenant and unique data per run.
 
 - Postgres is the only SQL database supported.
 - Subflows have no loops or conditions yet, and run serially inside one slot of `--parallel`.
-- Ctrl-C does not run `finally:` nodes.
 - Parallel execution (`--parallel N`) is opt-in, and only `needs:` and `nodes.<id>` references order nodes. See below.
 - `contract:` works on poll nodes that poll a request, not on db polls.
 - Secrets come from environment variables only; there is no vault integration.

@@ -108,6 +108,11 @@ on `snapshot -force`; exact numbers in bodies, args and transforms; opt-in retri
 nodes; a `graph` command showing declared vs inferred edges; a host allowlist for the dashboard; a "when not to use this"
 section and a flow-schema versioning policy; a design note on includes and data-driven flows.
 
+## Composition and control flow
+
+Plan: [`decisions/0008`](decisions/0008-composition-and-control-flow.md). **Subflows built 2026-10-12**
+([`0009`](decisions/0009-subflows.md)). **`finally` built 2026-10-20** (node-level cleanup, `-cleanup-timeout`, kind `cleanup`; Ctrl-C stops the run and then runs it, exit 130). Next in order: `{{ .run.id }}` built too (a per-run id, `-run-id` to pin it). Template functions with masking (unique values beyond the id), `if:`, `foreach` on flow nodes, and only on demand the rest.
+
 ## Milestone 3 — Close the known limits
 
 In rough order of value:

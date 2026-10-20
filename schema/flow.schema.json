@@ -26,6 +26,46 @@
       "items": {
         "$ref": "#/$defs/node"
       }
+    },
+    "finally": {
+      "description": "Cleanup nodes: run after every main node has finished, pass or fail, one at a time, under their own time limit. A node whose dependencies did not pass is skipped. API-only: request, transform, or a poll on a request.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/node"
+      }
+    },
+    "params": {
+      "type": "array",
+      "items": {
+        "oneOf": [
+          {
+            "type": "string",
+            "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+          },
+          {
+            "type": "object",
+            "required": [
+              "name"
+            ],
+            "additionalProperties": false,
+            "properties": {
+              "name": {
+                "type": "string",
+                "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+              },
+              "default": {}
+            }
+          }
+        ]
+      },
+      "description": "Inputs this flow takes when another flow runs it as a subflow. A param with a default is optional."
+    },
+    "outputs": {
+      "type": "object",
+      "propertyNames": {
+        "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
+      },
+      "description": "Values handed back to the calling flow as nodes.<id>.out.<name>; templates, evaluated once every node has finished."
     }
   },
   "$defs": {
@@ -47,7 +87,8 @@
             "assertion",
             "transform",
             "poll",
-            "db"
+            "db",
+            "flow"
           ]
         },
         "needs": {
@@ -172,6 +213,14 @@
         },
         "db": {
           "$ref": "#/$defs/db"
+        },
+        "flow": {
+          "type": "string",
+          "description": "Path of another flow file, relative to this one and inside the top-level flow's directory (kind: flow)."
+        },
+        "params": {
+          "type": "object",
+          "description": "Values the subflow is called with; strings may contain templates (kind: flow)."
         }
       },
       "allOf": [
@@ -242,6 +291,20 @@
           "then": {
             "required": [
               "db"
+            ]
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "kind": {
+                "const": "flow"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "flow"
             ]
           }
         }

@@ -1,0 +1,12 @@
+version: 1
+name: subflow-fail
+description: The subflow's login is rejected, so its inner assertion fails and nothing after it runs.
+nodes:
+  - id: auth
+    kind: flow
+    flow: _login.flow.yaml
+    params: {username: nobody}
+  - id: after
+    kind: transform
+    needs: [auth]
+    transform: {set: {x: 1}}

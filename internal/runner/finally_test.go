@@ -1,14 +1,18 @@
 package runner
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"sleuth/internal/flow"
 	"sleuth/internal/report"
 )
 
@@ -174,4 +178,82 @@ func TestFailedSubflowCleanupDoesNotBlockTheCaller(t *testing.T) {
 	if d := child(step(r, "sub"), "dropped"); d.ErrorKind != KindCleanup {
 		t.Fatalf("got %+v", d)
 	}
+}
+
+func TestInterruptStopsTheRunButCleanupStillRuns(t *testing.T) {
+	srv, seen := cleanupServer(false)
+	defer srv.Close()
+	flow := `version: 1
+name: top
+nodes:
+  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/things"}}
+  - {id: hang, kind: request, needs: [make], request: {url: "{{ .env.base }}/slow"}}
+  - {id: later, kind: transform, needs: [hang], transform: {set: {x: 1}}}
+finally:
+  - {id: drop, kind: request, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
+`
+	ctx, cancel := context.WithCancel(context.Background())
+	time.AfterFunc(300*time.Millisecond, cancel)
+	r := runTree(t, srv.URL, map[string]string{"top.yaml": flow}, Options{Context: ctx})
+	if !r.Interrupted || r.TimedOut || r.Status != report.Failed {
+		t.Fatalf("want interrupted (not timed out) and failed: %+v", r)
+	}
+	if h := step(r, "hang"); h.ErrorKind != KindInfra || !strings.Contains(h.Error, "interrupted") {
+		t.Fatalf("hang: %+v", h)
+	}
+	if l := step(r, "later"); l.Status != report.Skipped {
+		t.Fatalf("later: %+v", l)
+	}
+	if drop := step(r, "drop"); drop.Status != report.Passed {
+		t.Fatalf("cleanup must run after an interrupt: %+v", drop)
+	}
+	if got := strings.Join(seen(), ","); !strings.Contains(got, "DELETE /things/42") {
+		t.Fatalf("server saw %s", got)
+	}
+}
+
+func TestRunIDIsStableWithinARunAndPinnable(t *testing.T) {
+	srv, seen := cleanupServer(false)
+	defer srv.Close()
+	files := map[string]string{
+		"top.yaml": "version: 1\nname: top\nnodes:\n" +
+			"  - {id: a, kind: request, request: {url: \"{{ .env.base }}/a/{{ .run.id }}\"}}\n" +
+			"  - {id: s, kind: flow, flow: _sub.yaml}\n",
+		"_sub.yaml": "version: 1\nname: sub\nnodes:\n  - {id: b, kind: request, request: {url: \"{{ .env.base }}/b/{{ .run.id }}\"}}\n",
+	}
+	r := runTree(t, srv.URL, files, Options{RunID: "run-77"})
+	if r.RunID != "run-77" || r.Status != report.Passed {
+		t.Fatalf("%+v", r)
+	}
+	got := strings.Join(seen(), ",")
+	if !strings.Contains(got, "GET /a/run-77") || !strings.Contains(got, "GET /b/run-77") {
+		t.Fatalf("server saw %s", got)
+	}
+	r = runTree(t, srv.URL, files, Options{})
+	if len(r.RunID) != 8 || strings.Trim(r.RunID, "0123456789") != "" {
+		t.Fatalf("default id should be 8 digits: %q", r.RunID)
+	}
+	if !strings.Contains(strings.Join(seen(), ","), "GET /a/"+r.RunID) {
+		t.Fatalf("server saw %v", seen())
+	}
+}
+
+func TestBadRunIDIsASetupError(t *testing.T) {
+	f := mustLoadInline(t, "version: 1\nname: t\nnodes:\n  - {id: x, kind: transform, transform: {set: {a: 1}}}\n")
+	if _, _, err := Run(f, &EnvConfig{}, Options{RunID: "a b/c"}); err == nil {
+		t.Fatal("a run id with spaces or slashes must be refused")
+	}
+}
+
+func mustLoadInline(t *testing.T, y string) *flow.Flow {
+	t.Helper()
+	p := filepath.Join(t.TempDir(), "f.yaml")
+	if err := os.WriteFile(p, []byte(y), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := flow.Load(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return f
 }

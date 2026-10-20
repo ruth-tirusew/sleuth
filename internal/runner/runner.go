@@ -29,6 +29,11 @@ type Options struct {
 	// CleanupGrace bounds the finally nodes, which run even after the run's timeout. Zero means
 	// DefaultCleanupGrace.
 	CleanupGrace time.Duration
+	// Context, if set, is the run's parent: cancelling it (Ctrl-C) stops work in flight and skips
+	// nodes not yet started, exactly as the timeout does, and finally nodes still run.
+	Context context.Context
+	// RunID is the value of {{ .run.id }}. Empty means a fresh random one; pin it to repeat a run.
+	RunID string
 	// CaptureShapes records, on each step that returned JSON, the structure of its response (or
 	// database rows) as Step.Shape, so a run can be compared with, or recorded as, a shape snapshot.
 	CaptureShapes bool
@@ -83,6 +88,13 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		ctx.setParams(params)
 	}
 	ctx.grace = opts.CleanupGrace
+	runID := opts.RunID
+	if runID == "" {
+		runID = NewRunID()
+	} else if !runIDRe.MatchString(runID) {
+		return nil, nil, fmt.Errorf("run id %q must match %s", runID, runIDRe)
+	}
+	ctx.setRunID(runID)
 	specs, err := loadContracts(f, env)
 	if err != nil {
 		return nil, nil, err
@@ -97,12 +109,17 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	}
 	conns := newDBConns(workers)
 	defer conns.close()
+	base := opts.Context
+	if base == nil {
+		base = context.Background()
+	}
+	ctx.run = base
 	if opts.Timeout > 0 {
-		rctx, cancel := context.WithTimeout(context.Background(), opts.Timeout)
+		rctx, cancel := context.WithTimeout(base, opts.Timeout)
 		defer cancel()
 		ctx.run = rctx
 	}
-	run := &report.Run{Flow: f.Name, Env: opts.EnvName, Status: report.Passed, StartedAt: time.Now().UTC()}
+	run := &report.Run{Flow: f.Name, Env: opts.EnvName, RunID: runID, Status: report.Passed, StartedAt: time.Now().UTC()}
 	if workers > 1 {
 		run.Parallel = workers
 	}
@@ -199,7 +216,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 			ready = ready[1:]
 			if ctx.runCtx().Err() != nil { // past the run's timeout: do not start anything new
 				steps[i] = report.Step{ID: order[i].ID, Kind: order[i].Kind, StartedAt: time.Now().UTC(), Status: report.Skipped,
-					Error: fmt.Sprintf("not started: the run's timeout (%s) was reached", opts.Timeout)}
+					Error: "not started: " + ctx.stopReason()}
 				finish(i)
 				continue
 			}
@@ -220,9 +237,13 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 
 	run.Steps = steps
 	if ctx.runCtx().Err() != nil { // judged before cleanup, which runs under its own deadline
-		run.TimedOut = true
-		run.Timeout = opts.Timeout.String()
 		run.Status = report.Failed
+		if ctx.interrupted() {
+			run.Interrupted = true
+		} else {
+			run.TimedOut = true
+			run.Timeout = opts.Timeout.String()
+		}
 	}
 	run.Steps = append(run.Steps, runFinally(ctx, env, conns, f, steps, specs, emit)...)
 	for _, s := range report.Flatten(run.Steps) {
@@ -275,7 +296,7 @@ func execNode(ctx *Context, env *EnvConfig, conns *dbConns, n flow.Node, specs m
 		if ctx.runCtx().Err() != nil && step.ErrorKind != KindSpec {
 			// whatever the step was doing when the run's timeout passed, it did not finish in time
 			step.ErrorKind = KindInfra
-			step.Error = "stopped: the run's timeout was reached (" + step.Error + ")"
+			step.Error = "stopped: " + ctx.stopReason() + " (" + step.Error + ")"
 		}
 	} else {
 		step.Status = report.Passed

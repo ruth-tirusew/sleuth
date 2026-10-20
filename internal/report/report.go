@@ -29,9 +29,13 @@ type Run struct {
 	DurationMs int64     `json:"duration_ms"`
 	Parallel   int       `json:"parallel,omitempty"` // max nodes run at once; absent when serial
 	// TimedOut is set when the run's overall timeout (Timeout) stopped it before it finished.
-	TimedOut bool   `json:"timed_out,omitempty"`
-	Timeout  string `json:"timeout,omitempty"`
-	Steps    []Step `json:"steps"`
+	// RunID is the value of {{ .run.id }} in this run's templates.
+	RunID string `json:"run_id,omitempty"`
+	// Interrupted is set when the run was stopped by Ctrl-C or SIGTERM. Cleanup still ran.
+	Interrupted bool   `json:"interrupted,omitempty"`
+	TimedOut    bool   `json:"timed_out,omitempty"`
+	Timeout     string `json:"timeout,omitempty"`
+	Steps       []Step `json:"steps"`
 	// Drift summarises contract disagreements across the run; absent when no step used a contract.
 	Drift *DriftSummary `json:"drift,omitempty"`
 }
@@ -230,6 +234,9 @@ func Print(w io.Writer, r *Run) { PrintWith(w, r, PrintOptions{}) }
 // PrintWith is Print with options.
 func PrintWith(w io.Writer, r *Run, o PrintOptions) {
 	fmt.Fprintf(w, "Flow: %s  [%s]\n\n", r.Flow, strings.ToUpper(r.Status))
+	if r.Interrupted {
+		fmt.Fprint(w, "Run interrupted: steps in progress were stopped and the rest were not started. Cleanup (finally) still ran.\n\n")
+	}
 	if r.TimedOut {
 		fmt.Fprintf(w, "Run stopped: its timeout (%s) was reached. Steps in progress were stopped and the rest were not started.\n\n", r.Timeout)
 	}

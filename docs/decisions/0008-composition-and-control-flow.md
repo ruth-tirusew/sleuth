@@ -1,6 +1,6 @@
 # 0008 — Composition and control flow (proposal, not built)
 
-**Status:** proposed 2026-10-12. Nothing here is implemented. Reviewed against the code as of commit `af3dbdf`.
+**Status:** proposed 2026-10-12. Subflows (step 4 below) were built first at the user's request; see 0009. `finally` (step 2) was built 2026-10-20 as specified, with the choices below. The rest is not implemented. Reviewed against the code as of commit `af3dbdf`.
 
 ## Position
 Keep the YAML small. Reuse comes from **composing flows**, branching chooses **which nodes run** (never what a node
@@ -111,3 +111,11 @@ and independent, so they go first.
 Each step lands with a test that fails before it; unit tests in `flow` and `runner`, plus scenarios added to the e2e suite
 against `internal/mockservice` at `--parallel 1` and `4`. Each step gets a review pass before the next starts. Docs and
 `schema/flow.schema.json` are updated with each, and the README gets a "when not to use this" section as the roadmap already lists.
+
+## Update 2026-10-20: `finally` as built
+Top-level `finally:` list per flow (also inside subflows). Cleanup nodes run serially after the main nodes under their own
+grace context (`-cleanup-timeout`, default 30s) and are marked `cleanup` in evidence. Failed ones get error kind `cleanup`:
+the run fails, the exit code of a main failure is unchanged, and a cleanup-only failure exits 1. A failed cleanup inside a
+subflow fails the run but does not fail the calling node, so later nodes still run. Allowed kinds: request, transform, poll
+on a request. SIGINT/SIGTERM stop the run like the timeout (cause is recorded, steps say "interrupted"), then run cleanup, exit 130; `{{ .run.id }}` (eight random digits, `-run-id` to pin) keeps data unique per run without a wrapper script. Not done: a node-level `cleanup:` next to the creating request (queued
+automatically, run in reverse) is the likely next step for resource-style cleanup.

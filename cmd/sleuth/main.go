@@ -12,6 +12,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
@@ -19,8 +20,10 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"sleuth/internal/flow"
@@ -64,6 +67,7 @@ func run(args []string) int {
 	force := fs.Bool("force", false, "with -record-shapes: replace an existing snapshot (the old one is kept as FILE.prev) or record from a failed run")
 	shapeFail := fs.String("shape-drift-fail", "", "fail when responses differ from the snapshot by at least this severity: breaking | any (default: report only)")
 	runTimeout := fs.Duration("timeout", 0, "stop the whole run after this long (e.g. 10m): work in flight is stopped, unstarted nodes are skipped, exit 3")
+	runID := fs.String("run-id", "", "value of {{ .run.id }} (default: eight random digits); pin it to repeat a run with the same data")
 	cleanupGrace := fs.Duration("cleanup-timeout", 0, "time allowed for finally: nodes, which run even after -timeout (default 30s)")
 	defaultCoverage := report.CoverageList
 	if os.Getenv("CI") == "true" { // set by GitHub Actions, GitLab CI and most CI systems
@@ -118,8 +122,22 @@ func run(args []string) int {
 		}
 		flowSHA := flowFingerprint(f)
 		envName := strings.TrimSuffix(filepath.Base(*envPath), filepath.Ext(*envPath))
-		r, secrets, err := runner.Run(f, env, runner.Options{EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
+		// Ctrl-C (or SIGTERM) stops the run but not its cleanup; a second one ends the process.
+		sigCtx, stopSignals := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+		finished := make(chan struct{})
+		go func() {
+			<-sigCtx.Done()
+			select {
+			case <-finished: // the run ended on its own; stopSignals cancelled the context
+			default:
+				fmt.Fprintln(os.Stderr, "interrupted: stopping, then running cleanup (press Ctrl-C again to quit now)")
+				stopSignals()
+			}
+		}()
+		r, secrets, err := runner.Run(f, env, runner.Options{Context: sigCtx, RunID: *runID, EnvName: envName, Parallel: *parallel, FailOnSpecDrift: *specFail,
 			CaptureShapes: snap != nil || *recordShapes != "", Timeout: *runTimeout, CleanupGrace: *cleanupGrace})
+		close(finished)
+		stopSignals()
 		if err != nil {
 			return fail("error: ", err)
 		}
@@ -362,6 +380,9 @@ func printWaves(f *flow.Flow, n int) {
 }
 
 func exitCode(r *report.Run) int {
+	if r.Interrupted {
+		return 130 // the conventional code for a run ended by Ctrl-C
+	}
 	kinds := map[string]bool{}
 	if r.Drift != nil && r.Drift.Behaviour != nil && r.Drift.Behaviour.Failing {
 		kinds[runner.KindContract] = true // the system answered, but not as it did when the snapshot was recorded

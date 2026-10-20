@@ -18,7 +18,7 @@ func (c *Context) child() *Context {
 	defer c.mu.RUnlock()
 	return &Context{run: c.run, grace: c.grace, data: map[string]any{
 		"env": c.data["env"], "secrets": c.data["secrets"],
-		"nodes": map[string]any{}, "params": map[string]any{},
+		"nodes": map[string]any{}, "params": map[string]any{}, "run": c.data["run"],
 	}}
 }
 
@@ -129,7 +129,7 @@ func runSerial(ctx *Context, env *EnvConfig, conns *dbConns, order []flow.Node, 
 		case blocked != "":
 			skip(fmt.Sprintf("skipped: dependency %q did not pass", blocked))
 		case ctx.runCtx().Err() != nil:
-			skip("not started: the run's timeout was reached")
+			skip("not started: " + ctx.stopReason())
 		default:
 			steps[i] = execNode(ctx, env, conns, n, specs)
 		}

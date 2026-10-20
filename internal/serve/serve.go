@@ -139,7 +139,7 @@ func (s *Server) flowFiles() ([]string, error) {
 	for _, e := range ents {
 		n := e.Name()
 		ext := filepath.Ext(n)
-		if e.IsDir() || (ext != ".yaml" && ext != ".yml") || strings.Contains(n, ".env.") || strings.HasPrefix(n, ".") {
+		if e.IsDir() || (ext != ".yaml" && ext != ".yml") || strings.Contains(n, ".env.") || strings.HasPrefix(n, ".") || strings.HasPrefix(n, "_") { // _name.yaml is a subflow, run through the flows that call it
 			continue
 		}
 		out = append(out, n)

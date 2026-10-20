@@ -30,7 +30,7 @@ func recordShapesFile(path string, r *report.Run, flow, flowSHA, env string, mer
 		return noRecord
 	}
 	cur := map[string]shape.Entry{}
-	for _, s := range r.Steps {
+	for _, s := range report.Flatten(r.Steps) {
 		if s.Shape != nil {
 			cur[s.ID] = *s.Shape
 		}

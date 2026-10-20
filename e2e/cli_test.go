@@ -25,6 +25,9 @@ func TestValidate(t *testing.T) {
 	if r := run(0, "validate", "-parallel", "4", "parallel.flow.yaml"); !strings.Contains(r.stdout, "wave 1: s1, s2, s3, s4") {
 		t.Errorf("the four independent requests should share a wave:\n%s", r.stdout)
 	}
+	if r := run(0, "validate", "subflow.flow.yaml"); !strings.Contains(r.stdout, "auth -> _login.flow.yaml (call -> ok)") {
+		t.Errorf("validate should list the subflow and its steps:\n%s", r.stdout)
+	}
 	if r := run(2, "validate", "cycle.flow.yaml"); !strings.Contains(r.stderr, "cycle") {
 		t.Errorf("%s", r.stderr)
 	}

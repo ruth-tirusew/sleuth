@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"text/template"
+	"time"
 
 	"gopkg.in/yaml.v3"
 )
@@ -161,6 +162,8 @@ type Context struct {
 	// run is cancelled when the run's overall timeout passes. Every request, query and poll
 	// wait is bound to it, so work in flight stops instead of running on.
 	run context.Context
+	// grace bounds the finally nodes of a run, which must still run after the run's timeout.
+	grace time.Duration
 }
 
 // runCtx is the run-wide context (never nil).
@@ -189,7 +192,7 @@ func NewContext(env *EnvConfig) (*Context, []string, error) {
 		}
 	}
 	c := &Context{data: map[string]any{
-		"env": vars, "secrets": secrets, "nodes": map[string]any{},
+		"env": vars, "secrets": secrets, "nodes": map[string]any{}, "params": map[string]any{},
 	}}
 	return c, secretValues, nil
 }

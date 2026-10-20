@@ -87,7 +87,7 @@ func JUnit(r *Run, secrets []string) ([]byte, error) {
 		suite.Cases = append(suite.Cases, c)
 	}
 
-	for _, s := range r.Steps {
+	for _, s := range Leaves(r.Steps) {
 		c := junitCase{Name: s.ID, Classname: r.Flow + "." + s.Kind, Time: seconds(s.DurationMs)}
 		switch s.Status {
 		case Skipped:

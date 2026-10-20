@@ -61,6 +61,56 @@ func TestFlows(t *testing.T) {
 			},
 		},
 		{
+			name: "a subflow's outputs feed the caller, and its steps are nested in the evidence", flow: "subflow", exit: 0,
+			steps: map[string]string{"auth": "passed", "profile": "passed", "profile_ok": "passed"},
+			check: func(t *testing.T, r *result, _ int) {
+				auth := r.step("auth")
+				if auth.Flow != "_login.flow.yaml" || len(auth.Children) != 2 || auth.Output["user_id"] == nil {
+					t.Errorf("subflow evidence: %+v", auth)
+				}
+				raw := r.rawEvidence(t)
+				if strings.Contains(raw, password) || strings.Contains(r.stdout, password) || strings.Contains(r.stderr, password) {
+					t.Error("the secret leaked from inside the subflow")
+				}
+				if !strings.Contains(r.stdout, "_login.flow.yaml") || !strings.Contains(r.stdout, "call") {
+					t.Errorf("the report should show the subflow and its steps:\n%s", r.stdout)
+				}
+			},
+		},
+		{
+			name: "a failure inside a subflow fails the calling node with its kind, exit 1", flow: "subflow-fail", exit: 1,
+			steps: map[string]string{"auth": "assertion", "after": "skipped"},
+			check: func(t *testing.T, r *result, _ int) {
+				kids := r.step("auth").Children
+				if len(kids) != 2 || kids[0].Status != report.Failed || kids[1].Status != report.Skipped || !strings.Contains(r.step("auth").Error, "step call failed") {
+					t.Errorf("the inner failure should be in the nested evidence: %+v", kids)
+				}
+			},
+		},
+		{
+			name: "cleanup runs after a failed main node and is marked as cleanup", flow: "finally", exit: 1,
+			steps: map[string]string{"health": "passed", "must_be_teapot": "assertion", "tidy": "passed"},
+			check: func(t *testing.T, r *result, _ int) {
+				if !r.step("tidy").Cleanup || r.run.Steps[len(r.run.Steps)-1].ID != "tidy" {
+					t.Errorf("tidy should be the last step and marked cleanup: %+v", r.run.Steps)
+				}
+			},
+		},
+		{
+			name: "a failed cleanup alone fails the run with its own kind, exit 1", flow: "finally-fail", exit: 1,
+			steps: map[string]string{"health": "passed", "tidy": "passed", "tidied": "cleanup"},
+		},
+		{
+			name: "contract drift inside a subflow is reported under the inner step's path", flow: "subflow-contract", exit: 1,
+			steps: map[string]string{"inner": "contract"},
+			check: func(t *testing.T, r *result, _ int) {
+				d := r.run.Drift
+				if d == nil || d.Failing < 1 || d.Findings[0].Step != "inner/legacy" {
+					t.Errorf("drift should name the step by its path: %+v", d)
+				}
+			},
+		},
+		{
 			name: "a failed assertion exits 1 and skips its dependents", flow: "assertion-fail", exit: 1,
 			steps: map[string]string{"health": "passed", "expect_sick": "assertion", "after": "skipped"},
 			check: func(t *testing.T, r *result, _ int) {

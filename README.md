@@ -171,6 +171,82 @@ as a subquery so only `SELECT`/`WITH` can execute; a write smuggled behind a `SE
 `find`/`aggregate` are issued, and pipelines containing `$out` or `$merge` anywhere are refused. One connection per
 database is kept for the whole run and reused by every db node and poll attempt.
 
+### `flow` (subflows)
+
+A node of `kind: flow` runs another flow file as one step, so login, setup and shared checks are written once.
+
+```yaml
+# _auth.flow.yaml
+version: 1
+name: auth
+params:
+  - username                       # required
+  - {name: scope, default: read}   # optional
+nodes:
+  - id: login
+    kind: request
+    request:
+      method: POST
+      url: "{{ .env.base_url }}/login"
+      body: {user: "{{ .params.username }}", scope: "{{ .params.scope }}"}
+outputs:
+  token: "{{ .nodes.login.response.body.token }}"
+```
+```yaml
+# checkout.flow.yaml
+nodes:
+  - id: auth
+    kind: flow
+    flow: _auth.flow.yaml
+    params: {username: "{{ .env.username }}"}
+  - id: order
+    kind: request
+    request:
+      url: "{{ .env.base_url }}/orders"
+      headers: {Authorization: "Bearer {{ .nodes.auth.out.token }}"}
+```
+
+- The caller sees only `outputs`; the subflow's own nodes are not visible to it, and the subflow does not see the caller's
+  nodes. It shares the env, the secrets and the run timeout.
+- Params keep their type (a number stays a number). Missing required params, unknown params, an output that reads a
+  node the subflow does not have, and a flow that includes itself (directly or through others) are all rejected when
+  the flow is loaded, by `sleuth validate` too. Nesting is limited to 8 levels.
+- Paths are relative to the file that names them and must stay inside the directory of the flow you run (no `../`,
+  no absolute paths, symlinks are followed before the check). The path is plain text, never a template.
+- A subflow runs its nodes one at a time inside its caller's slot, so `--parallel` applies to the top-level flow's
+  nodes only. If a subflow fails, the calling node fails with the most severe kind among its failed steps and its
+  dependents are skipped.
+- Evidence nests: the calling step has `children`, and the report indents them. Drift, coverage, JUnit and snapshots
+  name inner steps by path (`auth/login`). A flow with required params cannot be run on its own.
+- The dashboard does not list files starting with `_`; name subflows `_name.flow.yaml`, or keep them in a subfolder.
+
+### `finally` (cleanup)
+
+Nodes under a flow's `finally:` run after every main node has finished, **whether the main nodes passed or not**:
+
+```yaml
+nodes:
+  - {id: create, kind: request, request: {method: POST, url: "{{ .env.base_url }}/orders", body: {sku: a1}}}
+  - {id: paid, kind: assertion, assert: [{path: nodes.create.response.status, equals: 201}]}
+finally:
+  - id: delete_order
+    kind: request
+    request: {method: DELETE, url: "{{ .env.base_url }}/orders/{{ .nodes.create.response.body.id }}"}
+```
+
+- They run one at a time, in dependency order, and may read main nodes (`nodes.<id>`) and earlier cleanup nodes.
+  A main node cannot read a cleanup node.
+- A cleanup node whose dependencies did not pass is **skipped** ("nothing to clean up"): if `create` failed there is
+  nothing to delete.
+- They get their own time limit (`-cleanup-timeout`, default 30s), so a run stopped by `-timeout` still cleans up.
+- They appear last in the evidence, marked `cleanup`. A failed one fails the run with error kind `cleanup` (state may
+  have leaked) but never replaces the failure the test was about: the exit code stays that of the main flow, and a
+  run that only failed in cleanup exits 1.
+- Cleanup is API-only: `request`, `transform`, or a `poll` on a request. `db` nodes are read-only and subflows are
+  refused. A subflow's own `finally:` runs when that subflow ends; a failed cleanup there does not skip the caller's
+  later nodes.
+- Not covered yet: Ctrl-C does not run cleanup. If a target has no delete endpoint, use an isolated environment.
+
 ## Contracts and drift
 
 Bind a request node to a provider's OpenAPI 3.x document:
@@ -295,7 +371,7 @@ time). Without it, only each node's own timeout applies.
 | 2 | usage, config, secret or flow error (results can't be trusted) |
 | 3 | infrastructure failure only (safe for CI to retry) |
 
-When a run has several kinds of failure, 2 wins over 1, and 1 over 3.
+When a run has several kinds of failure, 2 wins over 1, and 1 over 3. A run whose only failure is a `finally:` node (error kind `cleanup`) exits 1.
 
 ## Development
 
@@ -414,9 +490,24 @@ before another (reset data, then call the API), say so with `needs:`. `sleuth va
 lists the waves of nodes that would run together, so a missing `needs:` shows up before a run. Postgres nodes share a
 connection pool sized to N. See [`docs/decisions/0004-parallel-execution.md`](docs/decisions/0004-parallel-execution.md).
 
+## When not to use this
+
+Sleuth checks one thing well: that a **black-box API journey** still behaves as written, with evidence, contract and
+drift checks. It is deliberately small. The flow format will not grow variables, loops, `while` or scripting. When you
+need that, write the test in code (pytest, Karate, a Go test) and use Sleuth for the journeys that stay declarative.
+
+Reach for code instead when you need: computed or looping test data, many branches that depend on earlier results,
+parallel fan-out with joins, or setup that is not an API call (files, queues, direct database writes). Sleuth can still
+sit beside it: generate a flow file from your code and run `sleuth run` from a test.
+
+Sleuth cannot clean up what the target API will not let it delete. For those systems use an isolated environment or
+tenant and unique data per run.
+
 ## Limitations
 
 - Postgres is the only SQL database supported.
+- Subflows have no loops or conditions yet, and run serially inside one slot of `--parallel`.
+- Ctrl-C does not run `finally:` nodes.
 - Parallel execution (`--parallel N`) is opt-in, and only `needs:` and `nodes.<id>` references order nodes. See below.
 - `contract:` works on poll nodes that poll a request, not on db polls.
 - Secrets come from environment variables only; there is no vault integration.

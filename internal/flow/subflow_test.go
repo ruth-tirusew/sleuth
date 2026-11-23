@@ -30,7 +30,6 @@ params:
   - {name: scope, default: read}
 nodes:
   - id: login
-    kind: request
     request: {method: POST, url: "http://x/login", body: {u: "{{ .params.username }}"}}
 outputs:
   token: "{{ .nodes.login.response.body.token }}"
@@ -41,11 +40,9 @@ func callAuth(params string) string {
 name: top
 nodes:
   - id: auth
-    kind: flow
     flow: _auth.flow.yaml
 ` + params + `
   - id: use
-    kind: request
     request: {url: "http://x/{{ .nodes.auth.out.token }}"}
 `
 }
@@ -75,10 +72,8 @@ func TestSubflowParamTemplatesCreateDependencies(t *testing.T) {
 name: top
 nodes:
   - id: who
-    kind: transform
     transform: {set: {name: bob}}
   - id: auth
-    kind: flow
     flow: _auth.flow.yaml
     params: {username: "{{ .nodes.who.out.name }}"}
 `
@@ -110,15 +105,18 @@ func TestSubflowErrors(t *testing.T) {
 		{"direct cycle", map[string]string{"top.yaml": `version: 1
 name: top
 nodes:
-  - {id: again, kind: flow, flow: top.yaml}
+  - {id: again, flow: top.yaml}
 `}, "include themselves: top.yaml -> top.yaml"},
 		{"indirect cycle", map[string]string{
-			"a.yaml": "version: 1\nname: a\nnodes:\n  - {id: n, kind: flow, flow: b.yaml}\n",
-			"b.yaml": "version: 1\nname: b\nnodes:\n  - {id: n, kind: flow, flow: a.yaml}\n",
+			"a.yaml": "version: 1\nname: a\nnodes:\n  - {id: n, flow: b.yaml}\n",
+			"b.yaml": "version: 1\nname: b\nnodes:\n  - {id: n, flow: a.yaml}\n",
 		}, "a.yaml -> b.yaml -> a.yaml"},
 		{"output reads unknown node", map[string]string{"top.yaml": callAuth("    params: {username: a}"), "_auth.flow.yaml": strings.Replace(authFlow, ".nodes.login.", ".nodes.ghost.", 1)}, `output token reads node "ghost"`},
-		{"flow field on a request", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, flow: x.yaml, request: {url: http://x}}\n"}, "only valid on flow nodes"},
-		{"flow node without a path", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, kind: flow}\n"}, "flow is required"},
+		{"flow field on a request", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, flow: x.yaml, request: {url: http://x}}\n"}, "has both request and flow"},
+		{"flow node without a path", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, params: {x: 1}}\n"}, "flow is required"},
+		{"node with no body", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a}\n"}, "has nothing to do"},
+		{"kind is still written", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: http://x}}\n"}, "remove `kind: request`"},
+		{"two bodies", map[string]string{"top.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, db: {connection: m, query: select 1}, transform: {set: {a: 1}}}\n"}, "has both db and transform"},
 		{"duplicate param", map[string]string{"top.yaml": callAuth("    params: {username: a}"), "_auth.flow.yaml": strings.Replace(authFlow, "  - {name: scope, default: read}", "  - username", 1)}, `duplicate param "username"`},
 	}
 	for _, c := range cases {
@@ -142,9 +140,9 @@ nodes:
 func TestSubflowDepthLimit(t *testing.T) {
 	files := map[string]string{}
 	for i := 0; i <= MaxSubflowDepth+1; i++ {
-		body := "version: 1\nname: f\nnodes:\n  - {id: n, kind: flow, flow: f" + string(rune('a'+i+1)) + ".yaml}\n"
+		body := "version: 1\nname: f\nnodes:\n  - {id: n, flow: f" + string(rune('a'+i+1)) + ".yaml}\n"
 		if i == MaxSubflowDepth+1 {
-			body = "version: 1\nname: leaf\nnodes:\n  - {id: n, kind: transform, transform: {set: {a: b}}}\n"
+			body = "version: 1\nname: leaf\nnodes:\n  - {id: n, transform: {set: {a: b}}}\n"
 		}
 		files["f"+string(rune('a'+i))+".yaml"] = body
 	}
@@ -156,9 +154,9 @@ func TestSubflowDepthLimit(t *testing.T) {
 
 func TestSubflowCanLiveInASubdirectoryAndIncludeSiblings(t *testing.T) {
 	dir := writeTree(t, map[string]string{
-		"top.yaml":       "version: 1\nname: top\nnodes:\n  - {id: a, kind: flow, flow: lib/outer.yaml}\n",
-		"lib/outer.yaml": "version: 1\nname: outer\nnodes:\n  - {id: b, kind: flow, flow: inner.yaml}\n",
-		"lib/inner.yaml": "version: 1\nname: inner\nnodes:\n  - {id: c, kind: transform, transform: {set: {a: b}}}\n",
+		"top.yaml":       "version: 1\nname: top\nnodes:\n  - {id: a, flow: lib/outer.yaml}\n",
+		"lib/outer.yaml": "version: 1\nname: outer\nnodes:\n  - {id: b, flow: inner.yaml}\n",
+		"lib/inner.yaml": "version: 1\nname: inner\nnodes:\n  - {id: c, transform: {set: {a: b}}}\n",
 	})
 	f, err := Load(filepath.Join(dir, "top.yaml"))
 	if err != nil {
@@ -174,7 +172,7 @@ func TestSubflowCanLiveInASubdirectoryAndIncludeSiblings(t *testing.T) {
 
 func TestSymlinkCannotEscapeTheDirectory(t *testing.T) {
 	outside := writeTree(t, map[string]string{"evil.yaml": authFlow})
-	dir := writeTree(t, map[string]string{"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: a, kind: flow, flow: link.yaml, params: {username: x}}\n"})
+	dir := writeTree(t, map[string]string{"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: a, flow: link.yaml, params: {username: x}}\n"})
 	if err := os.Symlink(filepath.Join(outside, "evil.yaml"), filepath.Join(dir, "link.yaml")); err != nil {
 		t.Skip("symlinks unavailable")
 	}
@@ -209,20 +207,20 @@ func TestSubflowWithARelativePath(t *testing.T) {
 }
 
 func TestFinallyValidation(t *testing.T) {
-	const head = "version: 1\nname: t\nnodes:\n  - {id: make, kind: request, request: {url: 'http://x/make'}}\n"
+	const head = "version: 1\nname: t\nnodes:\n  - {id: make, request: {url: 'http://x/make'}}\n"
 	cases := map[string]struct{ yaml, want string }{
 		"ok": {head + `finally:
-  - {id: drop, kind: request, request: {method: DELETE, url: "http://x/{{ .nodes.make.response.body.id }}"}}
-  - {id: drop2, kind: request, needs: [drop], request: {method: DELETE, url: "http://x/2"}}
+  - {id: drop, request: {method: DELETE, url: "http://x/{{ .nodes.make.response.body.id }}"}}
+  - {id: drop2, needs: [drop], request: {method: DELETE, url: "http://x/2"}}
 `, ""},
 		"db refused": {head + `finally:
-  - {id: q, kind: db, db: {connection: c, query: "select 1"}, assert: [{path: nodes.q.row_count, equals: 1}]}
+  - {id: q, db: {connection: c, query: "select 1"}, assert: [{path: nodes.q.row_count, equals: 1}]}
 `, "read-only"},
-		"subflow refused": {head + "finally:\n  - {id: s, kind: flow, flow: _x.yaml}\n", "cannot be a subflow"},
-		"duplicate id":    {head + "finally:\n  - {id: make, kind: request, request: {url: 'http://x'}}\n", "duplicate node id"},
-		"main reads cleanup": {"version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: 'http://x/{{ .nodes.drop.response.status }}'}}\n" +
-			"finally:\n  - {id: drop, kind: request, request: {url: 'http://x'}}\n", "unknown node"},
-		"cleanup cycle": {head + "finally:\n  - {id: a, kind: request, needs: [b], request: {url: 'http://x'}}\n  - {id: b, kind: request, needs: [a], request: {url: 'http://x'}}\n", "cycle"},
+		"subflow refused": {head + "finally:\n  - {id: s, flow: _x.yaml}\n", "cannot be a subflow"},
+		"duplicate id":    {head + "finally:\n  - {id: make, request: {url: 'http://x'}}\n", "duplicate node id"},
+		"main reads cleanup": {"version: 1\nname: t\nnodes:\n  - {id: a, request: {url: 'http://x/{{ .nodes.drop.response.status }}'}}\n" +
+			"finally:\n  - {id: drop, request: {url: 'http://x'}}\n", "unknown node"},
+		"cleanup cycle": {head + "finally:\n  - {id: a, needs: [b], request: {url: 'http://x'}}\n  - {id: b, needs: [a], request: {url: 'http://x'}}\n", "cycle"},
 	}
 	for name, c := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -240,8 +238,8 @@ func TestFinallyValidation(t *testing.T) {
 
 func TestUnknownTemplateFunctionIsRejectedAtLoad(t *testing.T) {
 	dir := writeTree(t, map[string]string{
-		"ok.yaml":  "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: 'http://x/{{ .env.n | lower | b64enc }}', headers: {k: '{{ join \",\" .env.l }}'}}}\n",
-		"bad.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: 'http://x/{{ .env.n | reverse }}'}}\n",
+		"ok.yaml":  "version: 1\nname: t\nnodes:\n  - {id: a, request: {url: 'http://x/{{ .env.n | lower | b64enc }}', headers: {k: '{{ join \",\" .env.l }}'}}}\n",
+		"bad.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, request: {url: 'http://x/{{ .env.n | reverse }}'}}\n",
 	})
 	if _, err := Load(filepath.Join(dir, "ok.yaml")); err != nil {
 		t.Fatalf("known functions must load: %v", err)

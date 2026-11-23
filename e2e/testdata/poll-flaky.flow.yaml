@@ -3,7 +3,6 @@ name: poll-flaky
 description: The service drops the connection on its first two calls; a poll rides through that.
 nodes:
   - id: wait
-    kind: poll
     poll:
       interval: 50ms
       timeout: 5s

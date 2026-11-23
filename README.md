@@ -34,7 +34,6 @@ Commands:
     name: login-and-profile
     nodes:
       - id: login
-        kind: request
         request:
           method: POST
           url: "{{ .env.base_url }}/login"
@@ -42,12 +41,10 @@ Commands:
           extract: {token: body.token}
 
       - id: login_ok
-        kind: assertion
         assert:
           - {path: nodes.login.response.status, equals: 200}
 
       - id: profile
-        kind: request
         request:
           url: "{{ .env.base_url }}/me"
           headers: {Authorization: "Bearer {{ .nodes.login.out.token }}"}
@@ -140,7 +137,6 @@ comparisons and use floats.
 Repeat a request or a database query until a condition holds, for asynchronous work:
 
     - id: wait_done
-      kind: poll
       poll:
         interval: 2s                       # default 1s
         backoff: {factor: 2, max: 10s, jitter: 0.2}   # optional: delay = interval * factor^(n-1), capped, +/- jitter
@@ -161,7 +157,6 @@ Read-only queries against **Postgres** or **MongoDB**, named in the env file's `
 Postgres (`type: postgres`, the default) takes static SQL with values bound as `$1, $2…`, never interpolated:
 
     - id: orphans
-      kind: db
       db:
         connection: ledger
         query: SELECT count(*) AS n FROM attempts a LEFT JOIN actions r ON r.id = a.action_id WHERE r.id IS NULL
@@ -173,7 +168,6 @@ MongoDB (`type: mongo`) takes a `find` (`filter`, ordered `sort`, `projection`) 
 Filters and pipelines are extended JSON (`{_id: {$oid: "..."}}`) and strings may be templates:
 
     - id: duplicate_keys
-      kind: db
       db:
         type: mongo
         connection: events
@@ -196,7 +190,7 @@ database is kept for the whole run and reused by every db node and poll attempt.
 
 ### `flow` (subflows)
 
-A node of `kind: flow` runs another flow file as one step, so login, setup and shared checks are written once.
+A `flow:` node runs another flow file as one step, so login, setup and shared checks are written once.
 
 ```yaml
 # _auth.flow.yaml
@@ -207,7 +201,6 @@ params:
   - {name: scope, default: read}   # optional
 nodes:
   - id: login
-    kind: request
     request:
       method: POST
       url: "{{ .env.base_url }}/login"
@@ -219,11 +212,9 @@ outputs:
 # checkout.flow.yaml
 nodes:
   - id: auth
-    kind: flow
     flow: _auth.flow.yaml
     params: {username: "{{ .env.username }}"}
   - id: order
-    kind: request
     request:
       url: "{{ .env.base_url }}/orders"
       headers: {Authorization: "Bearer {{ .nodes.auth.out.token }}"}
@@ -249,11 +240,10 @@ Nodes under a flow's `finally:` run after every main node has finished, **whethe
 
 ```yaml
 nodes:
-  - {id: create, kind: request, request: {method: POST, url: "{{ .env.base_url }}/orders", body: {sku: a1}}}
-  - {id: paid, kind: assertion, assert: [{path: nodes.create.response.status, equals: 201}]}
+  - {id: create, request: {method: POST, url: "{{ .env.base_url }}/orders", body: {sku: a1}}}
+  - {id: paid, assert: [{path: nodes.create.response.status, equals: 201}]}
 finally:
   - id: delete_order
-    kind: request
     request: {method: DELETE, url: "{{ .env.base_url }}/orders/{{ .nodes.create.response.body.id }}"}
 ```
 
@@ -276,7 +266,6 @@ finally:
 Bind a request node to a provider's OpenAPI 3.x document:
 
     - id: get_user
-      kind: request
       contract: api                        # or {source: api, on_violation: warn}
       request: {url: "{{ .env.base_url }}/users/42"}
 

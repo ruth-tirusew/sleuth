@@ -107,7 +107,6 @@ func TestDerivedSecretsReachTheEvidenceAndReturnedList(t *testing.T) {
 name: t
 nodes:
   - id: call
-    kind: request
     request:
       url: "{{ .env.base }}/things"
       headers: {X-Key: "{{ .secrets.APIKEY | upper }}", Authorization: "Basic {{ .secrets.APIKEY | b64enc }}"}

@@ -64,11 +64,9 @@ version: 1
 name: t
 nodes:
   - id: pid1
-    kind: db
     db: {connection: main, query: "SELECT pg_backend_pid() AS pid", extract: {pid: rows.0.pid}}
     assert: [{path: nodes.pid1.row_count, equals: 1}]
   - id: settled
-    kind: poll
     needs: [pid1]
     poll:
       interval: 100ms
@@ -81,7 +79,6 @@ nodes:
       until:
         - {path: nodes.settled.row_count, equals: 1}
   - id: pid2
-    kind: db
     needs: [settled]
     db: {connection: main, query: "SELECT pg_backend_pid() AS pid"}
     assert:
@@ -107,14 +104,12 @@ version: 1
 name: t
 nodes:
   - id: never
-    kind: poll
     poll:
       interval: 100ms
       timeout: 400ms
       db: {connection: main, query: "SELECT 1 WHERE false"}
       until: [{path: nodes.never.row_count, gt: 0}]
   - id: broken
-    kind: poll
     poll:
       interval: 100ms
       timeout: 5s
@@ -168,7 +163,6 @@ version: 1
 name: t
 nodes:
   - id: active
-    kind: db
     db:
       type: mongo
       connection: m
@@ -184,7 +178,6 @@ nodes:
       - {path: nodes.active.rows.0.amount, equals: 250}
       - {path: nodes.active.out.top, equals: L-2}
   - id: by_id
-    kind: db
     db:
       type: mongo
       connection: m
@@ -196,7 +189,6 @@ nodes:
       - {path: nodes.by_id.rows.0.created, matches: '^2026-01-02T03:04:05'}
       - {path: nodes.by_id.rows.0.meta.tags.1, equals: b}
   - id: totals
-    kind: db
     db:
       type: mongo
       connection: m
@@ -210,7 +202,6 @@ nodes:
       - {path: nodes.totals.rows.0.n, equals: 2}
       - {path: nodes.totals.rows.0.total, equals: 350}
   - id: templated
-    kind: db
     needs: [active]
     db:
       type: mongo
@@ -220,14 +211,12 @@ nodes:
       filter: {ref: "{{ .nodes.active.out.top }}"}
     assert: [{path: nodes.templated.rows.0.amount, equals: 250}]
   - id: settled
-    kind: poll
     poll:
       interval: 100ms
       timeout: 10s
       db: {type: mongo, connection: m, database: sleuth_scratch, collection: settle, filter: {state: SETTLED}}
       until: [{path: nodes.settled.row_count, equals: 1}]
   - id: writes
-    kind: db
     db:
       type: mongo
       connection: m
@@ -236,21 +225,17 @@ nodes:
       pipeline: [{$match: {}}, {$out: loans_copy}]
     assert: [{path: nodes.writes.row_count, gt: 0}]
   - id: bad_op
-    kind: db
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: loans, filter: {amount: {$bogus: 1}}}
     assert: [{path: nodes.bad_op.row_count, gt: 0}]
   - id: precise
-    kind: db
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: precise, extract: {big: rows.0.big}}
     assert:
       - {path: nodes.precise.rows.0.big, equals: 9007199254740993, message: a NumberLong beyond 2^53 must not be rounded}
       - {path: nodes.precise.rows.0.price, equals: 10.5, message: Decimal128 10.50 equals 10.5}
   - id: precise_off_by_one
-    kind: db
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: precise}
     assert: [{path: nodes.precise_off_by_one.rows.0.big, equals: 9007199254740992}]
   - id: precise_roundtrip
-    kind: db
     needs: [precise]
     db:
       type: mongo
@@ -260,15 +245,12 @@ nodes:
       filter: {big: "{{ .nodes.precise.out.big }}"}
     assert: [{path: nodes.precise_roundtrip.row_count, equals: 1, message: the extracted long is sent back unchanged}]
   - id: unreachable
-    kind: db
     db: {type: mongo, connection: down, database: d, collection: c, timeout: 2s}
     assert: [{path: nodes.unreachable.row_count, gt: 0}]
   - id: wrong_type
-    kind: db
     db: {type: mongo, connection: pg, database: d, collection: c}
     assert: [{path: nodes.wrong_type.row_count, gt: 0}]
   - id: too_many
-    kind: db
     db: {type: mongo, connection: m, database: sleuth_scratch, collection: loans, max_rows: 2}
     assert: [{path: nodes.too_many.row_count, gt: 0}]
 `, id1.Hex(), id1.Hex()))
@@ -314,7 +296,7 @@ func TestLivePGParallelNodesUsePooledConnections(t *testing.T) {
 	var b strings.Builder
 	b.WriteString("version: 1\nname: t\nnodes:\n")
 	for i := 0; i < 4; i++ {
-		fmt.Fprintf(&b, "  - id: q%d\n    kind: db\n    db: {connection: main, query: \"SELECT %d AS n, pg_sleep(0.3)\"}\n    assert: [{path: nodes.q%d.row_count, equals: 1}]\n", i, i, i)
+		fmt.Fprintf(&b, "  - id: q%d\n    db: {connection: main, query: \"SELECT %d AS n, pg_sleep(0.3)\"}\n    assert: [{path: nodes.q%d.row_count, equals: 1}]\n", i, i, i)
 	}
 	p := t.TempDir() + "/f.yaml"
 	os.WriteFile(p, []byte(b.String()), 0o644)
@@ -379,7 +361,6 @@ version: 1
 name: t
 nodes:
   - id: a
-    kind: db
     db:
       connection: main
       query: "SELECT 9007199254740993::bigint AS big, 12345678901234567890.123456789::numeric AS dec"
@@ -388,15 +369,12 @@ nodes:
       - {path: nodes.a.rows.0.big, equals: 9007199254740993}
       - {path: nodes.a.rows.0.dec, equals: 12345678901234567890.123456789}
   - id: off_decimal
-    kind: db
     db: {connection: main, query: "SELECT 12345678901234567890.123456788::numeric AS dec"}
     assert: [{path: nodes.off_decimal.rows.0.dec, equals: 12345678901234567890.123456789, message: a decimal off in the last digit must not pass}]
   - id: off
-    kind: db
     db: {connection: main, query: "SELECT 9007199254740993::bigint AS big"}
     assert: [{path: nodes.off.rows.0.big, equals: 9007199254740992}]
   - id: b
-    kind: db
     needs: [a]
     db: {connection: main, query: "SELECT $1::bigint = 9007199254740993 AS same", args: ["{{ .nodes.a.out.big }}"]}
     assert: [{path: nodes.b.rows.0.same, equals: true}]

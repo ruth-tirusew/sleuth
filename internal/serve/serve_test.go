@@ -28,9 +28,9 @@ version: 1
 name: ok
 description: two independent calls then a join
 nodes:
-  - {id: a, kind: request, request: {url: "{{ .env.base }}/a", headers: {X-Key: "{{ .secrets.SLEUTH_UI_TEST_SECRET }}"}}}
-  - {id: b, kind: request, request: {url: "{{ .env.base }}/b"}}
-  - {id: join, kind: transform, needs: [a, b], transform: {set: {k: 1}}}
+  - {id: a, request: {url: "{{ .env.base }}/a", headers: {X-Key: "{{ .secrets.SLEUTH_UI_TEST_SECRET }}"}}}
+  - {id: b, request: {url: "{{ .env.base }}/b"}}
+  - {id: join, needs: [a, b], transform: {set: {k: 1}}}
 `), 0o644)
 	os.WriteFile(filepath.Join(dir, "broken.yaml"), []byte("version: 1\nname: broken\nnodes: []\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "local.env.yaml"), []byte("vars: {base: "+tgt.URL+"}\nsecrets: [SLEUTH_UI_TEST_SECRET]\n"), 0o644)
@@ -94,7 +94,7 @@ func TestFlowListingAndNoPathChosenByClient(t *testing.T) {
 		t.Fatalf("%d %s", c, b)
 	}
 	outside := filepath.Join(filepath.Dir(dir), "outside.yaml")
-	os.WriteFile(outside, []byte("version: 1\nname: x\nnodes: [{id: a, kind: transform, transform: {set: {a: 1}}}]\n"), 0o644)
+	os.WriteFile(outside, []byte("version: 1\nname: x\nnodes: [{id: a, transform: {set: {a: 1}}}]\n"), 0o644)
 	for _, name := range []string{"../outside.yaml", outside, "local.env.yaml", "nope.yaml", ""} {
 		body, _ := json.Marshal(runRequest{Flow: name})
 		if c, _ := call(t, "POST", ui.URL+"/api/run", string(body), auth); c != 404 {
@@ -213,7 +213,7 @@ func TestFlowsPairWithTheirEnvFile(t *testing.T) {
 	ui, s, dir := fixture(t, func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hitDefault, 1); fmt.Fprint(w, `{}`) })
 	paired := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { atomic.AddInt32(&hitPaired, 1); fmt.Fprint(w, `{}`) }))
 	defer paired.Close()
-	flow := "version: 1\nname: %s\nnodes:\n  - {id: a, kind: request, request: {url: \"{{ .env.base }}/a\"}}\n"
+	flow := "version: 1\nname: %s\nnodes:\n  - {id: a, request: {url: \"{{ .env.base }}/a\"}}\n"
 	os.WriteFile(filepath.Join(dir, "mine.flow.yaml"), []byte(fmt.Sprintf(flow, "mine")), 0o644)
 	os.WriteFile(filepath.Join(dir, "mine.env.yaml"), []byte("vars: {base: "+paired.URL+"}\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "plain.yml"), []byte(fmt.Sprintf(flow, "plain")), 0o644) // no paired file
@@ -270,7 +270,7 @@ func TestFlowsPairWithTheirEnvFile(t *testing.T) {
 
 func TestNoDefaultEnvIsFineWhenFlowsArePaired(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(filepath.Join(dir, "x.flow.yaml"), []byte("version: 1\nname: x\nnodes:\n  - {id: a, kind: transform, transform: {set: {a: 1}}}\n"), 0o644)
+	os.WriteFile(filepath.Join(dir, "x.flow.yaml"), []byte("version: 1\nname: x\nnodes:\n  - {id: a, transform: {set: {a: 1}}}\n"), 0o644)
 	ui := httptest.NewServer(New(Config{Dir: dir, Token: tok}).Handler())
 	defer ui.Close()
 	_, b := call(t, "GET", ui.URL+"/api/flows", "", auth)

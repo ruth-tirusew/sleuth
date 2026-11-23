@@ -3,7 +3,7 @@
 **Status:** built 2026-10-12. First step of [0008](0008-composition-and-control-flow.md).
 
 ## Decision
-A node of `kind: flow` runs another flow file: `flow:` (a path), `params:` in, `outputs:` out. The caller reads
+A `flow:` node runs another flow file: `flow:` (a path), `params:` in, `outputs:` out. The caller reads
 `nodes.<id>.out.<name>` and nothing else about the inside.
 
 ## Why this shape

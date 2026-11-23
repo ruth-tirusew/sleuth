@@ -66,7 +66,7 @@ func TestMissingSecretExit2(t *testing.T) {
 
 func TestCycleExit2(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "c.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: c\nnodes:\n- {id: a, kind: transform, needs: [b], transform: {set: {x: 1}}}\n- {id: b, kind: transform, needs: [a], transform: {set: {x: 1}}}\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: c\nnodes:\n- {id: a, needs: [b], transform: {set: {x: 1}}}\n- {id: b, needs: [a], transform: {set: {x: 1}}}\n"), 0o644)
 	if code := run([]string{"validate", p}); code != 2 {
 		t.Fatalf("want exit 2, got %d", code)
 	}
@@ -78,7 +78,7 @@ func TestInfraFailureExit3(t *testing.T) {
 	srv.Close()
 	dir := t.TempDir()
 	f := filepath.Join(dir, "f.yaml")
-	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, request: {url: \"{{ .env.base }}/\"}}\n"), 0o644)
+	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, request: {url: \"{{ .env.base }}/\"}}\n"), 0o644)
 	e := filepath.Join(dir, "e.yaml")
 	os.WriteFile(e, []byte("vars:\n  base: "+url+"\n"), 0o644)
 	if code := run([]string{"run", "-env", e, "-out", filepath.Join(dir, "o.json"), f}); code != 3 {
@@ -89,7 +89,7 @@ func TestInfraFailureExit3(t *testing.T) {
 func TestBrokenTemplateExit2(t *testing.T) {
 	dir := t.TempDir()
 	f := filepath.Join(dir, "f.yaml")
-	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, request: {url: \"{{ .env.nope }}/\"}}\n"), 0o644)
+	os.WriteFile(f, []byte("version: 1\nname: t\nnodes:\n- {id: a, request: {url: \"{{ .env.nope }}/\"}}\n"), 0o644)
 	if code := run([]string{"run", "-out", filepath.Join(dir, "o.json"), f}); code != 2 {
 		t.Fatalf("want exit 2, got %d", code)
 	}
@@ -153,7 +153,7 @@ func specFixture(t *testing.T, withBaseline bool) (envPath, flowPath, dir string
 	envPath = filepath.Join(dir, "e.yaml")
 	os.WriteFile(envPath, []byte(env), 0o644)
 	flowPath = filepath.Join(dir, "f.yaml")
-	os.WriteFile(flowPath, []byte("version: 1\nname: t\nnodes:\n  - {id: a, kind: request, contract: api, request: {url: \"{{ .env.base }}/u\"}}\n"), 0o644)
+	os.WriteFile(flowPath, []byte("version: 1\nname: t\nnodes:\n  - {id: a, contract: api, request: {url: \"{{ .env.base }}/u\"}}\n"), 0o644)
 	return envPath, flowPath, dir
 }
 

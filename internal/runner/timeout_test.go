@@ -31,16 +31,15 @@ const slowFlow = `
 version: 1
 name: t
 nodes:
-  - {id: hang, kind: request, request: {url: "{{ .env.base }}/hang"}}
-  - {id: after, kind: transform, needs: [hang], transform: {set: {x: 1}}}
+  - {id: hang, request: {url: "{{ .env.base }}/hang"}}
+  - {id: after, needs: [hang], transform: {set: {x: 1}}}
   - id: wait
-    kind: poll
     poll:
       interval: 50ms
       timeout: 10s
       request: {url: "{{ .env.base }}/pending"}
       until: [{path: nodes.wait.response.body.done, equals: true}]
-  - {id: last, kind: transform, transform: {set: {y: 2}}}
+  - {id: last, transform: {set: {y: 2}}}
 `
 
 // A request with the default 30s timeout, and a poll with a 10s window, both stop when the
@@ -90,7 +89,7 @@ func TestNoTimeoutMeansNoLimit(t *testing.T) {
 		w.Write([]byte(`{}`))
 	}))
 	defer srv.Close()
-	r := runWithTimeout(t, srv.URL, "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: \"{{ .env.base }}/\"}}\n", 0, 1)
+	r := runWithTimeout(t, srv.URL, "version: 1\nname: t\nnodes:\n  - {id: a, request: {url: \"{{ .env.base }}/\"}}\n", 0, 1)
 	if r.TimedOut || r.Status != report.Passed {
 		t.Fatalf("%+v", r)
 	}

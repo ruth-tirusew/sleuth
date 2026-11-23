@@ -48,8 +48,8 @@ func TestTimeoutFailsStepAndSkipsDependents(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: slow, kind: request, request: {url: "{{ .env.base }}/", timeout: 100ms}}
-  - {id: next, kind: transform, needs: [slow], transform: {set: {a: 1}}}
+  - {id: slow, request: {url: "{{ .env.base }}/", timeout: 100ms}}
+  - {id: next, needs: [slow], transform: {set: {a: 1}}}
 `)
 	if step(r, "slow").Status != report.Failed || step(r, "next").Status != report.Skipped {
 		t.Fatalf("got %+v", r.Steps)
@@ -70,7 +70,6 @@ version: 1
 name: t
 nodes:
   - id: a
-    kind: request
     request: {url: "{{ .env.base }}/", extract: {tok: body.token}}
 `)
 	e := step(r, "a").Error
@@ -89,9 +88,8 @@ func TestNonJSONBodyAndHeaderLookup(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, request: {url: "{{ .env.base }}/"}}
+  - {id: a, request: {url: "{{ .env.base }}/"}}
   - id: chk
-    kind: assertion
     assert:
       - {path: nodes.a.response.raw, contains: plain}
       - {path: nodes.a.response.headers.x-thing, equals: abc}
@@ -112,14 +110,12 @@ version: 1
 name: t
 nodes:
   - id: chk
-    kind: assertion
     assert:
       - {path: nodes.tr.out.n, equals: 5}
       - {path: nodes.tr.out.first, equals: 7}
   - id: tr
-    kind: transform
     transform: {set: {n: "{{ .nodes.a.response.body.n }}", first: "{{ .nodes.a.response.body.items.0.id }}"}}
-  - {id: a, kind: request, request: {url: "{{ .env.base }}/"}}
+  - {id: a, request: {url: "{{ .env.base }}/"}}
 `)
 	if r.Status != report.Passed {
 		t.Fatalf("%+v", r.Steps)
@@ -139,12 +135,12 @@ func TestErrorKinds(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: ok, kind: request, request: {url: "{{ .env.base }}/"}}
-  - {id: wrong, kind: assertion, assert: [{path: nodes.ok.response.body.a, equals: 2}]}
-  - {id: missing_field, kind: request, request: {url: "{{ .env.base }}/", extract: {x: body.nope}}}
-  - {id: bad_tpl, kind: request, request: {url: "{{ .env.nope }}/"}}
-  - {id: bad_re, kind: assertion, assert: [{path: nodes.ok.response.raw, matches: "("}]}
-  - {id: bad_timeout, kind: request, request: {url: "{{ .env.base }}/", timeout: soon}}
+  - {id: ok, request: {url: "{{ .env.base }}/"}}
+  - {id: wrong, assert: [{path: nodes.ok.response.body.a, equals: 2}]}
+  - {id: missing_field, request: {url: "{{ .env.base }}/", extract: {x: body.nope}}}
+  - {id: bad_tpl, request: {url: "{{ .env.nope }}/"}}
+  - {id: bad_re, assert: [{path: nodes.ok.response.raw, matches: "("}]}
+  - {id: bad_timeout, request: {url: "{{ .env.base }}/", timeout: soon}}
 `)
 	want := map[string]string{
 		"wrong": KindAssertion, "missing_field": KindAssertion,
@@ -163,8 +159,8 @@ nodes:
 version: 1
 name: t
 nodes:
-  - {id: down, kind: request, request: {url: "{{ .env.base }}/"}}
-  - {id: after, kind: transform, needs: [down], transform: {set: {a: 1}}}
+  - {id: down, request: {url: "{{ .env.base }}/"}}
+  - {id: after, needs: [down], transform: {set: {a: 1}}}
 `)
 	if step(r, "down").ErrorKind != KindInfra {
 		t.Errorf("connection refused: kind %q", step(r, "down").ErrorKind)
@@ -207,8 +203,8 @@ func TestContractResponseDriftFailsWithContractKind(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
-  - {id: b, kind: transform, needs: [a], transform: {set: {x: 1}}}
+  - {id: a, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: b, needs: [a], transform: {set: {x: 1}}}
 `, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":"7"}`)) }) // wrong type + missing name
 	a := step(r, "a")
 	if a.Status != report.Failed || a.ErrorKind != KindContract {
@@ -227,7 +223,7 @@ func TestContractWarnModePassesButRecords(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, contract: {source: api, on_violation: warn}, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: a, contract: {source: api, on_violation: warn}, request: {url: "{{ .env.base }}/users/7"}}
 `, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":"7","name":"x"}`)) })
 	a := step(r, "a")
 	if a.Status != report.Passed || len(a.Contract.Violations) != 1 {
@@ -242,7 +238,6 @@ version: 1
 name: t
 nodes:
   - id: a
-    kind: request
     contract: api
     request: {method: POST, url: "{{ .env.base }}/users", body: {name: 5, junk: true}}
 `, func(w http.ResponseWriter, _ *http.Request) { hits++ })
@@ -260,9 +255,9 @@ func TestContractUndocumentedStatusAndOperationAndEmptySchema(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: undocumented, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
-  - {id: unknown_op, kind: request, contract: api, request: {url: "{{ .env.base }}/nope"}}
-  - {id: empty, kind: request, contract: api, request: {url: "{{ .env.base }}/empty"}}
+  - {id: undocumented, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: unknown_op, contract: api, request: {url: "{{ .env.base }}/nope"}}
+  - {id: empty, contract: api, request: {url: "{{ .env.base }}/empty"}}
 `, func(w http.ResponseWriter, r *http.Request) {
 		if strings.HasPrefix(r.URL.Path, "/users") {
 			w.WriteHeader(401)
@@ -283,7 +278,7 @@ nodes:
 
 func TestMissingContractSourceIsSetupError(t *testing.T) {
 	dir := t.TempDir()
-	os.WriteFile(dir+"/f.yaml", []byte("version: 1\nname: t\nnodes:\n- {id: a, kind: request, contract: nope, request: {url: \"http://x\"}}\n"), 0o644)
+	os.WriteFile(dir+"/f.yaml", []byte("version: 1\nname: t\nnodes:\n- {id: a, contract: nope, request: {url: \"http://x\"}}\n"), 0o644)
 	f, err := flow.Load(dir + "/f.yaml")
 	if err != nil {
 		t.Fatal(err)
@@ -342,7 +337,7 @@ func TestContractNotesNonJSONBodies(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/api/t"}}
+  - {id: a, contract: api, request: {url: "{{ .env.base }}/api/t"}}
 `), 0o644)
 	f, err := flow.Load(dir + "/f.yaml")
 	if err != nil {
@@ -363,8 +358,8 @@ func TestRunReportsRegistryCoverage(t *testing.T) {
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
-  - {id: after, kind: transform, needs: [a], transform: {set: {x: 1}}}
+  - {id: a, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: after, needs: [a], transform: {set: {x: 1}}}
 `, func(w http.ResponseWriter, _ *http.Request) { w.Write([]byte(`{"id":7,"name":"x"}`)) })
 	if r.Drift == nil || len(r.Drift.Sources) != 1 {
 		t.Fatalf("%+v", r.Drift)
@@ -398,7 +393,7 @@ func runWithBaseline(t *testing.T, baseline, failOn string) (*report.Run, error)
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: a, contract: api, request: {url: "{{ .env.base }}/users/7"}}
 `), 0o644)
 	f, err := flow.Load(dir + "/f.yaml")
 	if err != nil {
@@ -475,9 +470,8 @@ version: 1
 name: t
 nodes:
   - id: login
-    kind: assertion
     assert: [{path: env.base, equals: nope}]
-  - {id: a, kind: request, needs: [login], contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: a, needs: [login], contract: api, request: {url: "{{ .env.base }}/users/7"}}
 `), 0o644)
 	f, err := flow.Load(dir + "/f.yaml")
 	if err != nil {

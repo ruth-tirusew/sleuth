@@ -51,11 +51,10 @@ const diamond = `
 version: 1
 name: t
 nodes:
-  - {id: a, kind: request, request: {url: "{{ .env.base }}/a"}}
-  - {id: b, kind: request, request: {url: "{{ .env.base }}/b"}}
-  - {id: c, kind: request, request: {url: "{{ .env.base }}/c"}}
+  - {id: a, request: {url: "{{ .env.base }}/a"}}
+  - {id: b, request: {url: "{{ .env.base }}/b"}}
+  - {id: c, request: {url: "{{ .env.base }}/c"}}
   - id: join
-    kind: transform
     needs: [a, b, c]
     transform: {set: {x: "{{ .nodes.a.response.status }}"}}
 `
@@ -106,11 +105,11 @@ func TestParallelEvidenceIsInFlowOrderAndFailureSkipsOnlyDependents(t *testing.T
 version: 1
 name: t
 nodes:
-  - {id: bad, kind: request, request: {url: "{{ .env.base }}/bad", extract: {x: body.missing}}}
-  - {id: good, kind: request, request: {url: "{{ .env.base }}/good"}}
-  - {id: after_bad, kind: transform, needs: [bad], transform: {set: {x: 1}}}
-  - {id: after_good, kind: transform, needs: [good], transform: {set: {x: 1}}}
-  - {id: after_after, kind: transform, needs: [after_bad], transform: {set: {x: 1}}}
+  - {id: bad, request: {url: "{{ .env.base }}/bad", extract: {x: body.missing}}}
+  - {id: good, request: {url: "{{ .env.base }}/good"}}
+  - {id: after_bad, needs: [bad], transform: {set: {x: 1}}}
+  - {id: after_good, needs: [good], transform: {set: {x: 1}}}
+  - {id: after_after, needs: [after_bad], transform: {set: {x: 1}}}
 `
 	for i := 0; i < 20; i++ {
 		r := runParallel(t, srv.URL, y, 4)
@@ -142,14 +141,14 @@ func TestParallelWideFlowSharesContextSafely(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { fmt.Fprint(w, `{"v":1}`) }))
 	defer srv.Close()
 	var b strings.Builder
-	b.WriteString("version: 1\nname: t\nnodes:\n  - {id: root, kind: request, request: {url: \"{{ .env.base }}/r\", extract: {v: body.v}}}\n")
+	b.WriteString("version: 1\nname: t\nnodes:\n  - {id: root, request: {url: \"{{ .env.base }}/r\", extract: {v: body.v}}}\n")
 	var needs []string
 	for i := 0; i < 24; i++ {
-		fmt.Fprintf(&b, "  - id: n%d\n    kind: request\n    request: {url: \"{{ .env.base }}/x?v={{ .nodes.root.out.v }}&i=%d\"}\n", i, i)
-		fmt.Fprintf(&b, "  - id: t%d\n    kind: transform\n    transform: {set: {v: \"{{ .nodes.n%d.response.status }}\", e: \"{{ .env.base }}\"}}\n", i, i)
+		fmt.Fprintf(&b, "  - id: n%d\n    request: {url: \"{{ .env.base }}/x?v={{ .nodes.root.out.v }}&i=%d\"}\n", i, i)
+		fmt.Fprintf(&b, "  - id: t%d\n    transform: {set: {v: \"{{ .nodes.n%d.response.status }}\", e: \"{{ .env.base }}\"}}\n", i, i)
 		needs = append(needs, fmt.Sprintf("t%d", i))
 	}
-	fmt.Fprintf(&b, "  - {id: end, kind: transform, needs: [%s], transform: {set: {ok: 1}}}\n", strings.Join(needs, ", "))
+	fmt.Fprintf(&b, "  - {id: end, needs: [%s], transform: {set: {ok: 1}}}\n", strings.Join(needs, ", "))
 	r := runParallel(t, srv.URL, b.String(), 8)
 	if r.Status != report.Passed || len(r.Steps) != 50 {
 		t.Fatalf("%s %d steps", r.Status, len(r.Steps))
@@ -166,14 +165,12 @@ version: 1
 name: t
 nodes:
   - id: p1
-    kind: poll
     poll:
       interval: 40ms
       timeout: 5s
       request: {url: "` + srv1.URL + `/"}
       until: [{path: nodes.p1.response.body.status, equals: DONE}]
   - id: p2
-    kind: poll
     poll:
       interval: 40ms
       timeout: 5s

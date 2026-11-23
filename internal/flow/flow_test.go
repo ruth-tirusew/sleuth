@@ -38,10 +38,8 @@ func deps(f *Flow, id string) []string {
 func TestDepsIgnoreLiteralText(t *testing.T) {
 	f := load(t, `
   - id: a
-    kind: request
     request: {url: "https://nodes.cluster.local/api", headers: {X-Note: "see nodes.count"}}
   - id: chk
-    kind: assertion
     needs: [a]
     assert:
       - {path: nodes.a.response.status, equals: 200, message: "nodes.count mismatch"}
@@ -58,27 +56,23 @@ func TestDepsIgnoreLiteralText(t *testing.T) {
 // Real references, wherever they legitimately occur, still create edges.
 func TestDepsFromTemplatesAndPaths(t *testing.T) {
 	f := load(t, `
-  - {id: a, kind: transform, transform: {set: {x: 1}}}
-  - {id: b, kind: transform, transform: {set: {y: 2}}}
-  - {id: c, kind: transform, transform: {set: {z: 3}}}
-  - {id: d, kind: transform, transform: {set: {z: 3}}}
-  - {id: e, kind: transform, transform: {set: {z: 3}}}
+  - {id: a, transform: {set: {x: 1}}}
+  - {id: b, transform: {set: {y: 2}}}
+  - {id: c, transform: {set: {z: 3}}}
+  - {id: d, transform: {set: {z: 3}}}
+  - {id: e, transform: {set: {z: 3}}}
   - id: req
-    kind: request
     request:
       url: "{{ .env.base }}/x/{{ .nodes.a.out.x }}"
       headers: {Authorization: "Bearer {{ .nodes.b.out.y }}"}
       body: {n: "{{ .nodes.c.out.z }}", list: ["{{ .nodes.d.out.z }}"]}
   - id: wait
-    kind: poll
     poll:
       request: {url: "{{ .env.base }}/j"}
       until: [{path: nodes.wait.response.body.status, equals: "{{ .nodes.e.out.z }}"}]
   - id: upstream
-    kind: transform
     transform: {set: {k: 1}}
   - id: chk
-    kind: assertion
     assert: [{path: nodes.upstream.out.k, equals: 1}]
 `)
 	if d := deps(f, "req"); !reflect.DeepEqual(d, []string{"a", "b", "c", "d"}) {
@@ -94,7 +88,7 @@ func TestDepsFromTemplatesAndPaths(t *testing.T) {
 
 func TestDepsOnUnknownNodeStillRejected(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: a, kind: transform, transform: {set: {x: \"{{ .nodes.ghost.out.y }}\"}}}\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: a, transform: {set: {x: \"{{ .nodes.ghost.out.y }}\"}}}\n"), 0o644)
 	if _, err := Load(p); err == nil {
 		t.Fatal("a template reference to an undefined node must still fail validation")
 	}
@@ -104,9 +98,8 @@ func TestDepsOnUnknownNodeStillRejected(t *testing.T) {
 // that cannot be traced is refused with a clear message instead of being mis-ordered.
 func TestDepsFromIndexFormAndUntraceableTemplates(t *testing.T) {
 	f := load(t, `
-  - {id: login, kind: transform, transform: {set: {token: t}}}
+  - {id: login, transform: {set: {token: t}}}
   - id: viaindex
-    kind: request
     request: {url: 'http://x/{{ (index .nodes "login").out.token }}'}
 `)
 	if d := deps(f, "viaindex"); !reflect.DeepEqual(d, []string{"login"}) {
@@ -117,9 +110,8 @@ func TestDepsFromIndexFormAndUntraceableTemplates(t *testing.T) {
 	os.WriteFile(p, []byte(`version: 1
 name: t
 nodes:
-  - {id: login, kind: transform, transform: {set: {token: t}}}
+  - {id: login, transform: {set: {token: t}}}
   - id: dynamic
-    kind: request
     request: {url: 'http://x/{{ with $n := .nodes }}{{ $n.login.out.token }}{{ end }}'}
 `), 0o644)
 	_, err := Load(p)
@@ -132,10 +124,9 @@ nodes:
 func TestDepsIgnoreAPathKeyOutsideChecks(t *testing.T) {
 	f := load(t, `
   - id: a
-    kind: request
     request: {method: POST, url: "http://x", body: {path: "nodes.b.out.x", items: [{path: "nodes.c.y"}]}}
-  - {id: b, kind: transform, transform: {set: {x: 1}}}
-  - {id: c, kind: transform, transform: {set: {y: 1}}}
+  - {id: b, transform: {set: {x: 1}}}
+  - {id: c, transform: {set: {y: 1}}}
 `)
 	if d := deps(f, "a"); len(d) != 0 {
 		t.Fatalf("body fields named path are data: %v", d)
@@ -147,7 +138,6 @@ func TestDepsIgnoreAPathKeyOutsideChecks(t *testing.T) {
 func TestCheckExpectedNumbersKeepExactText(t *testing.T) {
 	f := load(t, `
   - id: chk
-    kind: assertion
     assert:
       - {path: a, equals: 12345678901234567890.123456789}
       - {path: b, equals: 10.50}
@@ -177,7 +167,7 @@ func TestCheckExpectedNumbersKeepExactText(t *testing.T) {
 
 func TestCheckStillRejectsUnknownFields(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    kind: assertion\n    assert: [{path: a, equal: 1}]\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    assert: [{path: a, equal: 1}]\n"), 0o644)
 	if _, err := Load(p); err == nil {
 		t.Fatal("a typo such as `equal:` must still be a validation error")
 	}
@@ -186,9 +176,8 @@ func TestCheckStillRejectsUnknownFields(t *testing.T) {
 // $ is the root of the template data, so $.nodes.a reads node a from inside range / with.
 func TestDepsFromRootVariable(t *testing.T) {
 	f := load(t, `
-  - {id: login, kind: transform, transform: {set: {token: t}}}
+  - {id: login, transform: {set: {token: t}}}
   - id: inrange
-    kind: request
     request:
       url: 'http://x/{{ range .items }}{{ $.nodes.login.out.token }}{{ end }}'
 `)
@@ -196,7 +185,7 @@ func TestDepsFromRootVariable(t *testing.T) {
 		t.Errorf("$.nodes form: %v", d)
 	}
 	p := filepath.Join(t.TempDir(), "f.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: login, kind: transform, transform: {set: {t: 1}}}\n  - id: bad\n    kind: request\n    request: {url: 'http://x/{{ with $n := $.nodes }}{{ $n.login.out.t }}{{ end }}'}\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: login, transform: {set: {t: 1}}}\n  - id: bad\n    request: {url: 'http://x/{{ with $n := $.nodes }}{{ $n.login.out.t }}{{ end }}'}\n"), 0o644)
 	if _, err := Load(p); err == nil {
 		t.Fatal("`$n := $.nodes` cannot be traced and must be refused")
 	}
@@ -205,10 +194,9 @@ func TestDepsFromRootVariable(t *testing.T) {
 // YAML anchors, aliases and merge keys keep working inside checks.
 func TestChecksSupportYAMLAnchorsAliasesAndMergeKeys(t *testing.T) {
 	f := load(t, `
-  - {id: x, kind: transform, transform: {set: {s: 1}}}
-  - {id: y, kind: transform, transform: {set: {s: 1}}}
+  - {id: x, transform: {set: {s: 1}}}
+  - {id: y, transform: {set: {s: 1}}}
   - id: a
-    kind: assertion
     assert:
       - &ok {path: nodes.x.out.s, equals: 200, message: shared}
       - *ok
@@ -216,7 +204,6 @@ func TestChecksSupportYAMLAnchorsAliasesAndMergeKeys(t *testing.T) {
         path: nodes.y.out.s
         equals: 404.50
   - id: b
-    kind: assertion
     assert:
       - <<: [*ok, {contains: [1.0]}]
 `)
@@ -239,7 +226,7 @@ func TestChecksSupportYAMLAnchorsAliasesAndMergeKeys(t *testing.T) {
 // A merged-in unknown field is still rejected.
 func TestChecksRejectUnknownFieldsEvenWhenMerged(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    kind: assertion\n    assert:\n      - <<: {path: a, equal: 1}\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    assert:\n      - <<: {path: a, equal: 1}\n"), 0o644)
 	if _, err := Load(p); err == nil {
 		t.Fatal("an unknown field must be an error even when it arrives through a merge")
 	}
@@ -256,15 +243,14 @@ func TestRootReadsAreUntraceableButScopedDotIsNot(t *testing.T) {
 		"$.nodes as whole": `{{ $n := $.nodes }}{{ $n.a }}`,
 	} {
 		p := filepath.Join(t.TempDir(), "f.yaml")
-		os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: a, kind: transform, transform: {set: {x: 1}}}\n  - id: b\n    kind: request\n    request: {url: 'http://x/"+strings.ReplaceAll(tpl, "'", "''")+"'}\n"), 0o644)
+		os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - {id: a, transform: {set: {x: 1}}}\n  - id: b\n    request: {url: 'http://x/"+strings.ReplaceAll(tpl, "'", "''")+"'}\n"), 0o644)
 		if _, err := Load(p); err == nil {
 			t.Errorf("%s: must be refused (it reads every node)", name)
 		}
 	}
 	f := load(t, `
-  - {id: a, kind: transform, transform: {set: {x: 1}}}
+  - {id: a, transform: {set: {x: 1}}}
   - id: ok
-    kind: request
     request: {url: 'http://x/{{ range .items }}{{ . }}{{ end }}{{ with .y }}{{ . }}{{ end }}{{ .nodes.a.out.x }}'}
 `)
 	if d := deps(f, "ok"); !reflect.DeepEqual(d, []string{"a"}) {
@@ -275,16 +261,15 @@ func TestRootReadsAreUntraceableButScopedDotIsNot(t *testing.T) {
 // A self-referential anchor must be an error, never a stack overflow; a quoted "<<" is data.
 func TestYAMLCyclesAndQuotedMergeKey(t *testing.T) {
 	p := filepath.Join(t.TempDir(), "f.yaml")
-	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    kind: assertion\n    assert:\n      - &a {path: x, <<: *a}\n"), 0o644)
+	os.WriteFile(p, []byte("version: 1\nname: t\nnodes:\n  - id: c\n    assert:\n      - &a {path: x, <<: *a}\n"), 0o644)
 	_, err := Load(p) // must return (any result), not crash
 	_ = err
 
 	f := load(t, `
   - id: q
-    kind: assertion
     assert:
       - {path: nodes.x.out.v, equals: {"<<": 7, plain: 1.50}}
-  - {id: x, kind: transform, transform: {set: {v: 1}}}
+  - {id: x, transform: {set: {v: 1}}}
 `)
 	got, _ := f.Nodes[0].Assert[0].Equals.(map[string]any)
 	if got["<<"] == nil || got["plain"] != json.Number("1.50") {

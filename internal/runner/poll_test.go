@@ -30,7 +30,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     poll:
       interval: 20ms
       timeout: %s
@@ -40,7 +39,6 @@ nodes:
       until:
         - {path: nodes.wait.response.body.status, equals: DONE}
   - id: use
-    kind: transform
     transform: {set: {job: "{{ .nodes.wait.out.job }}"}}
 `
 
@@ -126,7 +124,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     poll:
       timeout: 5s
       request: {url: "{{ .env.base }}/"}
@@ -143,7 +140,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     contract: ` + mode + `
     poll:
       interval: 10ms
@@ -211,7 +207,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     contract: api
     poll:
       interval: 10ms
@@ -273,7 +268,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     contract: api
     poll:
       interval: 10ms
@@ -322,7 +316,6 @@ version: 1
 name: t
 nodes:
   - id: wait
-    kind: poll
     poll:
       interval: 50ms
       timeout: 1500ms

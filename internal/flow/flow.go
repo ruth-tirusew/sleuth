@@ -84,14 +84,18 @@ func (p *Param) UnmarshalYAML(n *yaml.Node) error {
 }
 
 type Node struct {
-	ID        string     `yaml:"id" json:"id"`
-	Kind      string     `yaml:"kind" json:"kind"`
-	Needs     []string   `yaml:"needs,omitempty" json:"needs,omitempty"`
-	Request   *Request   `yaml:"request,omitempty" json:"request,omitempty"`
-	Assert    []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
-	Transform *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
-	Poll      *Poll      `yaml:"poll,omitempty" json:"poll,omitempty"`
-	DB        *DB        `yaml:"db,omitempty" json:"db,omitempty"`
+	ID string `yaml:"id" json:"id"`
+	// Kind is not written in a flow file: Validate sets it from the node's body key
+	// (request, poll, db, transform or flow; assert alone makes an assertion).
+	Kind string `yaml:"-" json:"kind"`
+	// LegacyKind catches a `kind:` key so the error can say what to write instead.
+	LegacyKind string     `yaml:"kind,omitempty" json:"-"`
+	Needs      []string   `yaml:"needs,omitempty" json:"needs,omitempty"`
+	Request    *Request   `yaml:"request,omitempty" json:"request,omitempty"`
+	Assert     []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
+	Transform  *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
+	Poll       *Poll      `yaml:"poll,omitempty" json:"poll,omitempty"`
+	DB         *DB        `yaml:"db,omitempty" json:"db,omitempty"`
 	// Contract (request nodes only) validates the call against a published OpenAPI document.
 	Contract *Contract `yaml:"contract,omitempty" json:"contract,omitempty"`
 	// Flow (flow nodes only) is the path of another flow file, relative to this one. Params are
@@ -556,6 +560,13 @@ func (f *Flow) Validate() error {
 		}
 		pseen[p.Name] = true
 	}
+	for _, nodes := range [][]Node{f.Nodes, f.Finally} {
+		for i := range nodes {
+			if err := nodes[i].resolveKind(); err != nil {
+				return err
+			}
+		}
+	}
 	seen := map[string]bool{}
 	mainIDs := map[string]bool{}
 	all := append(append([]Node{}, f.Nodes...), f.Finally...)
@@ -567,9 +578,6 @@ func (f *Flow) Validate() error {
 		}
 		if err := n.checkTemplateFuncs(); err != nil {
 			return err
-		}
-		if n.Kind != KindFlow && (n.Flow != "" || n.Params != nil) {
-			return fmt.Errorf("node %s: flow and params are only valid on flow nodes", n.ID)
 		}
 		if _, untraceable := n.refs(); untraceable && len(n.Needs) == 0 {
 			return fmt.Errorf("node %s: a template reads .nodes in a way that cannot be traced to specific nodes (for example through a variable); list the nodes it uses under needs:", n.ID)
@@ -689,6 +697,46 @@ func (f *Flow) Validate() error {
 	}
 	_, err := f.FinallyOrder()
 	return err
+}
+
+// resolveKind sets a node's kind from its body key. A node has exactly one of request, poll,
+// db, transform or flow (params counts as flow); with none of them, assert alone makes it an
+// assertion. Writing the kind as well would say the same thing twice, and the two could disagree.
+func (n *Node) resolveKind() error {
+	if n.LegacyKind != "" {
+		return fmt.Errorf("node %s: remove `kind: %s`; a node's kind is its body key (request, poll, db, transform, flow, or assert alone)", n.ID, n.LegacyKind)
+	}
+	var keys, kinds []string
+	add := func(present bool, key, kind string) {
+		if present {
+			keys = append(keys, key)
+			kinds = append(kinds, kind)
+		}
+	}
+	add(n.Request != nil, "request", KindRequest)
+	add(n.Poll != nil, "poll", KindPoll)
+	add(n.DB != nil, "db", KindDB)
+	add(n.Transform != nil, "transform", KindTransform)
+	add(n.Flow != "", "flow", KindFlow)
+	add(n.Flow == "" && n.Params != nil, "params", KindFlow)
+	var kind string
+	switch {
+	case len(keys) > 1:
+		return fmt.Errorf("node %s has both %s and %s; a node does one thing", n.ID, keys[0], keys[1])
+	case len(keys) == 1:
+		kind = kinds[0]
+	case n.Kind != "": // built in Go with no body; the kind's own checks report what is missing
+		return nil
+	case n.Assert != nil:
+		kind = KindAssertion
+	default:
+		return fmt.Errorf("node %s has nothing to do: give it one of request, poll, db, transform or flow (or assert alone)", n.ID)
+	}
+	if n.Kind != "" && n.Kind != kind {
+		return fmt.Errorf("node %s: kind %s does not match its %s body", n.ID, n.Kind, keys[0])
+	}
+	n.Kind = kind
+	return nil
 }
 
 // validateCleanup holds what only cleanup nodes must satisfy: they change state through the

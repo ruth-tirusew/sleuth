@@ -20,7 +20,7 @@ refusals (no mutable variables, no `while`, no `break`, no dynamic node generati
 ## Review of the proposal
 
 ### Subflows — build, but it is the expensive one
-Right idea, and it fits the DAG: a `kind: flow` node depends on whatever its `params` templates reference. Hidden
+Right idea, and it fits the DAG: a `flow:` node depends on whatever its `params` templates reference. Hidden
 internals come for free if the child gets a fresh `Context` (env, secrets, params; empty `nodes`). Problems to settle:
 1. **Evidence is flat everywhere.** Nesting needs `Step.Children` and step ids as paths (`auth/login`). `SummarizeDrift`,
    `AddCoverage`, JUnit, shapes, the dashboard timeline and the evidence schema must all descend. This refactor is most
@@ -43,7 +43,7 @@ internals come for free if the child gets a fresh `Context` (env, secrets, param
 - **Env cannot hold a list**, so `foreach: "{{ .env.test_order_ids }}"` (the proposal's example) cannot work today. Sources
   for v1: an inline YAML list, or an array produced by an earlier node. A list-valued env var is a separate, later change
   to `EnvConfig.Vars`.
-- **Only on `kind: flow` nodes.** Then one iteration is one subflow call: evidence nests as already designed, and we avoid
+- **Only on `flow:` nodes.** Then one iteration is one subflow call: evidence nests as already designed, and we avoid
   defining what iteration means for `poll`, `db` and contract nodes. Flow-level `foreach` is the same thing written as a
   parent flow, so it is dropped (one mechanism, not two). Request-level `foreach` can be sugar later.
 - `on_iteration_failure: fail|collect` (default `fail`); `parallel: N` is bounded by the shared pool and counted against it.

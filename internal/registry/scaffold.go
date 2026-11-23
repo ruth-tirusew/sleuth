@@ -192,7 +192,7 @@ func (s *Spec) ScaffoldNode(op *Operation, source, id string) string {
 	if summary = strings.Join(strings.Fields(summary), " "); summary != "" {
 		fmt.Fprintf(&b, "  # %s\n", summary)
 	}
-	fmt.Fprintf(&b, "  - id: %s\n    kind: request\n    contract: %s\n    request:\n", id, source)
+	fmt.Fprintf(&b, "  - id: %s\n    contract: %s\n    request:\n", id, source)
 	if method != "GET" {
 		fmt.Fprintf(&b, "      method: %s\n", method)
 	}
@@ -251,7 +251,7 @@ func (s *Spec) ScaffoldNode(op *Operation, source, id string) string {
 			}
 		}
 	}
-	fmt.Fprintf(&b, "\n  - id: %s_ok\n    kind: assertion\n    assert:\n      - path: nodes.%s.response.status\n        equals: %d\n", id, id, op.firstSuccess())
+	fmt.Fprintf(&b, "\n  - id: %s_ok\n    assert:\n      - path: nodes.%s.response.status\n        equals: %d\n", id, id, op.firstSuccess())
 	return b.String()
 }
 

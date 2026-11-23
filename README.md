@@ -34,7 +34,6 @@ Commands:
     name: login-and-profile
     nodes:
       - id: login
-        kind: request
         request:
           method: POST
           url: "{{ .env.base_url }}/login"
@@ -42,12 +41,10 @@ Commands:
           extract: {token: body.token}
 
       - id: login_ok
-        kind: assertion
         assert:
           - {path: nodes.login.response.status, equals: 200}
 
       - id: profile
-        kind: request
         request:
           url: "{{ .env.base_url }}/me"
           headers: {Authorization: "Bearer {{ .nodes.login.out.token }}"}
@@ -73,9 +70,31 @@ Templates (`{{ ... }}`) can read:
 | `.nodes.<id>.rows`, `.row_count` | a db node's result |
 | `.nodes.<id>.out.<name>` | values a node `extract`ed or `transform`ed |
 | `.run.id` | eight random digits, the same for the whole run (subflows and `finally:` too) and recorded in the evidence; `-run-id X` pins it to repeat a run. Use it for names, phones and keys that must be unique per run |
+| `.run.uid` | 32 random hex characters, for names that must not collide even when many runs share an environment (eight digits can, rarely); a pinned `-run-id` gives the same uid every time |
 
 A string that is exactly one reference (`"{{ .nodes.a.out.count }}"`) keeps its native type; anything else is
 rendered as text. An unresolved reference is an error, never an empty string.
+
+### Template functions
+
+A small, closed set, written the Go way (the piped value is the last argument):
+
+| Function | Example | Result |
+|---|---|---|
+| `lower`, `upper` | `{{ .env.name \| upper }}` | case changed |
+| `b64enc` | `{{ .secrets.TOKEN \| b64enc }}` | standard base64 |
+| `prefix` | `{{ prefix "id-" .run.id }}` | `id-` + value |
+| `join` | `{{ join "," .nodes.a.out.ids }}` | list joined with a separator |
+| `first` | `{{ .nodes.a.out.ids \| first }}` | first element (error if empty or not a list) |
+| `default` | `{{ default "none" .env.note }}` | the fallback when the value is empty, false or an empty list |
+| `urlquery`, `html`, `js`, `printf`, `print`, `println` | `{{ printf "%s-%s" .run.id .env.name }}` | Go's own, with masking added |
+
+Go's `eq`, `ne`, `lt`, `gt`, `and`, `or`, `not`, `index` and `len` also work. Anything else (`map`, `filter`, `sort`,
+loops over data) is refused on purpose, and an unknown function is a load error that lists the available ones.
+**Secrets stay masked through functions:** if any argument contains a secret (or a value already derived from one),
+the result is added to the masked set, so `{{ .secrets.TOKEN | upper }}` or a Basic auth header built with `b64enc`
+never reaches the evidence, the printed report, JUnit or the dashboard. A result of a function is always text; only a
+bare `{{ .path }}` keeps its native type.
 
 ### Environment file
 
@@ -118,7 +137,6 @@ comparisons and use floats.
 Repeat a request or a database query until a condition holds, for asynchronous work:
 
     - id: wait_done
-      kind: poll
       poll:
         interval: 2s                       # default 1s
         backoff: {factor: 2, max: 10s, jitter: 0.2}   # optional: delay = interval * factor^(n-1), capped, +/- jitter
@@ -139,7 +157,6 @@ Read-only queries against **Postgres** or **MongoDB**, named in the env file's `
 Postgres (`type: postgres`, the default) takes static SQL with values bound as `$1, $2…`, never interpolated:
 
     - id: orphans
-      kind: db
       db:
         connection: ledger
         query: SELECT count(*) AS n FROM attempts a LEFT JOIN actions r ON r.id = a.action_id WHERE r.id IS NULL
@@ -151,7 +168,6 @@ MongoDB (`type: mongo`) takes a `find` (`filter`, ordered `sort`, `projection`) 
 Filters and pipelines are extended JSON (`{_id: {$oid: "..."}}`) and strings may be templates:
 
     - id: duplicate_keys
-      kind: db
       db:
         type: mongo
         connection: events
@@ -174,7 +190,7 @@ database is kept for the whole run and reused by every db node and poll attempt.
 
 ### `flow` (subflows)
 
-A node of `kind: flow` runs another flow file as one step, so login, setup and shared checks are written once.
+A `flow:` node runs another flow file as one step, so login, setup and shared checks are written once.
 
 ```yaml
 # _auth.flow.yaml
@@ -185,7 +201,6 @@ params:
   - {name: scope, default: read}   # optional
 nodes:
   - id: login
-    kind: request
     request:
       method: POST
       url: "{{ .env.base_url }}/login"
@@ -197,11 +212,9 @@ outputs:
 # checkout.flow.yaml
 nodes:
   - id: auth
-    kind: flow
     flow: _auth.flow.yaml
     params: {username: "{{ .env.username }}"}
   - id: order
-    kind: request
     request:
       url: "{{ .env.base_url }}/orders"
       headers: {Authorization: "Bearer {{ .nodes.auth.out.token }}"}
@@ -227,11 +240,10 @@ Nodes under a flow's `finally:` run after every main node has finished, **whethe
 
 ```yaml
 nodes:
-  - {id: create, kind: request, request: {method: POST, url: "{{ .env.base_url }}/orders", body: {sku: a1}}}
-  - {id: paid, kind: assertion, assert: [{path: nodes.create.response.status, equals: 201}]}
+  - {id: create, request: {method: POST, url: "{{ .env.base_url }}/orders", body: {sku: a1}}}
+  - {id: paid, assert: [{path: nodes.create.response.status, equals: 201}]}
 finally:
   - id: delete_order
-    kind: request
     request: {method: DELETE, url: "{{ .env.base_url }}/orders/{{ .nodes.create.response.body.id }}"}
 ```
 
@@ -254,7 +266,6 @@ finally:
 Bind a request node to a provider's OpenAPI 3.x document:
 
     - id: get_user
-      kind: request
       contract: api                        # or {source: api, on_violation: warn}
       request: {url: "{{ .env.base_url }}/users/42"}
 

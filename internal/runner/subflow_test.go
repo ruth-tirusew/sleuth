@@ -54,13 +54,11 @@ params:
   - {name: scope, default: read}
 nodes:
   - id: login
-    kind: request
     request:
       method: POST
       url: "{{ .env.base }}/login"
       body: {user: "{{ .params.username }}", scope: "{{ .params.scope }}"}
   - id: ok
-    kind: assertion
     assert: [{path: nodes.login.response.status, equals: 200}]
 outputs:
   token: "{{ .nodes.login.response.body.token }}"
@@ -87,9 +85,8 @@ func TestSubflowRunsAndPassesOutputsToTheCaller(t *testing.T) {
 				"top.yaml": `version: 1
 name: top
 nodes:
-  - {id: auth, kind: flow, flow: _auth.yaml, params: {username: bob}}
+  - {id: auth, flow: _auth.yaml, params: {username: bob}}
   - id: me
-    kind: request
     request: {url: "{{ .env.base }}/me", headers: {Authorization: "Bearer {{ .nodes.auth.out.token }}"}}
 `,
 				"_auth.yaml": loginFlow,
@@ -119,9 +116,8 @@ func TestSubflowInternalsAreHiddenFromTheCaller(t *testing.T) {
 	os.WriteFile(dir+"/top.yaml", []byte(`version: 1
 name: top
 nodes:
-  - {id: auth, kind: flow, flow: _auth.yaml, params: {username: bob}}
+  - {id: auth, flow: _auth.yaml, params: {username: bob}}
   - id: peek
-    kind: transform
     needs: [auth]
     transform: {set: {t: "{{ .nodes.login.response.status }}"}}
 `), 0o644)
@@ -142,8 +138,8 @@ func TestSubflowFailureKindsPropagate(t *testing.T) {
 		"top.yaml": `version: 1
 name: top
 nodes:
-  - {id: auth, kind: flow, flow: _auth.yaml, params: {username: bob}}
-  - {id: after, kind: transform, needs: [auth], transform: {set: {a: 1}}}
+  - {id: auth, flow: _auth.yaml, params: {username: bob}}
+  - {id: after, needs: [auth], transform: {set: {a: 1}}}
 `,
 		"_auth.yaml": loginFlow,
 	}, Options{})
@@ -199,7 +195,7 @@ func TestSubflowOutputErrorIsASpecFailure(t *testing.T) {
 	srv := loginServer()
 	defer srv.Close()
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml":   "version: 1\nname: top\nnodes:\n  - {id: auth, kind: flow, flow: _auth.yaml, params: {username: bob}}\n",
+		"top.yaml":   "version: 1\nname: top\nnodes:\n  - {id: auth, flow: _auth.yaml, params: {username: bob}}\n",
 		"_auth.yaml": strings.Replace(loginFlow, ".response.body.token", ".response.body.nothing", 1),
 	}, Options{})
 	a := step(r, "auth")
@@ -220,11 +216,11 @@ func TestNestedSubflows(t *testing.T) {
 	srv := loginServer()
 	defer srv.Close()
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: outer, kind: flow, flow: lib/outer.yaml}\n",
+		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: outer, flow: lib/outer.yaml}\n",
 		"lib/outer.yaml": `version: 1
 name: outer
 nodes:
-  - {id: inner, kind: flow, flow: inner.yaml, params: {who: amy}}
+  - {id: inner, flow: inner.yaml, params: {who: amy}}
 outputs:
   t: "{{ .nodes.inner.out.t }}"
 `,
@@ -232,7 +228,7 @@ outputs:
 name: inner
 params: [who]
 nodes:
-  - {id: x, kind: transform, transform: {set: {t: "hi-{{ .params.who }}"}}}
+  - {id: x, transform: {set: {t: "hi-{{ .params.who }}"}}}
 outputs: {t: "{{ .nodes.x.out.t }}"}
 `,
 	}, Options{})
@@ -256,15 +252,14 @@ func TestSubflowCallerParamTypesSurvive(t *testing.T) {
 		"top.yaml": `version: 1
 name: top
 nodes:
-  - {id: n, kind: transform, transform: {set: {id: 42}}}
-  - {id: sub, kind: flow, flow: _s.yaml, params: {id: "{{ .nodes.n.out.id }}"}}
+  - {id: n, transform: {set: {id: 42}}}
+  - {id: sub, flow: _s.yaml, params: {id: "{{ .nodes.n.out.id }}"}}
 `,
 		"_s.yaml": `version: 1
 name: s
 params: [id]
 nodes:
   - id: chk
-    kind: assertion
     assert: [{path: params.id, equals: 42}]
 `,
 	}, Options{})
@@ -278,7 +273,7 @@ func TestSubflowSecretsAreMaskedInNestedEvidence(t *testing.T) {
 	defer srv.Close()
 	t.Setenv("SLEUTH_SUBFLOW_SECRET", "s3cr3t-value")
 	dir := t.TempDir()
-	os.WriteFile(dir+"/top.yaml", []byte("version: 1\nname: top\nnodes:\n  - {id: auth, kind: flow, flow: _a.yaml, params: {username: \"{{ .secrets.SLEUTH_SUBFLOW_SECRET }}\"}}\n"), 0o644)
+	os.WriteFile(dir+"/top.yaml", []byte("version: 1\nname: top\nnodes:\n  - {id: auth, flow: _a.yaml, params: {username: \"{{ .secrets.SLEUTH_SUBFLOW_SECRET }}\"}}\n"), 0o644)
 	os.WriteFile(dir+"/_a.yaml", []byte(loginFlow), 0o644)
 	f, err := flow.Load(dir + "/top.yaml")
 	if err != nil {
@@ -305,11 +300,11 @@ func TestSubflowContractDriftAndCoverageCountInsideSubflows(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{"id":"7"}`)) }))
 	defer srv.Close()
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: sub, kind: flow, flow: _s.yaml}\n",
+		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: sub, flow: _s.yaml}\n",
 		"_s.yaml": `version: 1
 name: s
 nodes:
-  - {id: get, kind: request, contract: api, request: {url: "{{ .env.base }}/users/7"}}
+  - {id: get, contract: api, request: {url: "{{ .env.base }}/users/7"}}
 `,
 		"spec.json": fakeSpec,
 	}, Options{})
@@ -336,7 +331,7 @@ func TestSubflowRunsInsideTheParentsWorkerSlot(t *testing.T) {
 	files := map[string]string{"_a.yaml": loginFlow}
 	top := "version: 1\nname: top\nnodes:\n"
 	for i := 0; i < 4; i++ {
-		top += fmt.Sprintf("  - {id: a%d, kind: flow, flow: _a.yaml, params: {username: u%d}}\n", i, i)
+		top += fmt.Sprintf("  - {id: a%d, flow: _a.yaml, params: {username: u%d}}\n", i, i)
 	}
 	files["top.yaml"] = top
 	for _, w := range []int{1, 2} {
@@ -358,12 +353,12 @@ func TestSubflowStopsAtTheRunTimeout(t *testing.T) {
 	defer srv.Close()
 	start := time.Now()
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: sub, kind: flow, flow: _s.yaml}\n",
+		"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: sub, flow: _s.yaml}\n",
 		"_s.yaml": `version: 1
 name: s
 nodes:
-  - {id: slow, kind: request, request: {url: "{{ .env.base }}/"}}
-  - {id: next, kind: transform, needs: [slow], transform: {set: {a: 1}}}
+  - {id: slow, request: {url: "{{ .env.base }}/"}}
+  - {id: next, needs: [slow], transform: {set: {a: 1}}}
 `,
 	}, Options{Timeout: 200 * time.Millisecond})
 	if time.Since(start) > 1500*time.Millisecond || !r.TimedOut || step(r, "sub").ErrorKind != KindInfra {

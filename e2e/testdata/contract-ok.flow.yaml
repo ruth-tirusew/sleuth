@@ -2,11 +2,9 @@ version: 1
 name: contract-ok
 nodes:
   - id: health
-    kind: request
     contract: api
     request: {url: "{{ .env.base_url }}/health"}
   - id: login
-    kind: request
     contract: api
     request:
       method: POST
@@ -14,12 +12,10 @@ nodes:
       body: {username: "{{ .env.username }}", password: "{{ .secrets.APP_PASSWORD }}"}
       extract: {token: body.token}
   - id: user
-    kind: request
     contract: api
     request:
       url: "{{ .env.base_url }}/users/42"
       headers: {x-access-token: "{{ .nodes.login.out.token }}"}
   - id: item
-    kind: request
     contract: api
     request: {url: "{{ .env.base_url }}/items/7"}

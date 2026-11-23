@@ -70,26 +70,16 @@
   },
   "$defs": {
     "node": {
+      "description": "A node's kind is its body key: exactly one of request, poll, db, transform or flow; assert alone makes an assertion.",
       "type": "object",
       "required": [
-        "id",
-        "kind"
+        "id"
       ],
       "additionalProperties": false,
       "properties": {
         "id": {
           "type": "string",
           "pattern": "^[A-Za-z_][A-Za-z0-9_]*$"
-        },
-        "kind": {
-          "enum": [
-            "request",
-            "assertion",
-            "transform",
-            "poll",
-            "db",
-            "flow"
-          ]
         },
         "needs": {
           "type": "array",
@@ -216,95 +206,70 @@
         },
         "flow": {
           "type": "string",
-          "description": "Path of another flow file, relative to this one and inside the top-level flow's directory (kind: flow)."
+          "description": "Path of another flow file, relative to this one and inside the top-level flow's directory."
         },
         "params": {
           "type": "object",
-          "description": "Values the subflow is called with; strings may contain templates (kind: flow)."
+          "description": "Values the subflow is called with; strings may contain templates."
         }
       },
-      "allOf": [
+      "oneOf": [
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "request"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "request"
-            ]
-          }
+          "required": [
+            "request"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "assertion"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "assert"
-            ]
-          }
+          "required": [
+            "poll"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "transform"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "transform"
-            ]
-          }
+          "required": [
+            "db"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "poll"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "poll"
-            ]
-          }
+          "required": [
+            "transform"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "db"
-              }
-            }
-          },
-          "then": {
-            "required": [
-              "db"
-            ]
-          }
+          "required": [
+            "flow"
+          ]
         },
         {
-          "if": {
-            "properties": {
-              "kind": {
-                "const": "flow"
+          "required": [
+            "assert"
+          ],
+          "not": {
+            "anyOf": [
+              {
+                "required": [
+                  "request"
+                ]
+              },
+              {
+                "required": [
+                  "poll"
+                ]
+              },
+              {
+                "required": [
+                  "db"
+                ]
+              },
+              {
+                "required": [
+                  "transform"
+                ]
+              },
+              {
+                "required": [
+                  "flow"
+                ]
               }
-            }
-          },
-          "then": {
-            "required": [
-              "flow"
             ]
           }
         }

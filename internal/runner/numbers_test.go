@@ -85,19 +85,15 @@ version: 1
 name: t
 nodes:
   - id: get
-    kind: request
     request: {url: "{{ .env.base }}/", extract: {id: body.id}}
   - id: exact
-    kind: assertion
     assert:
       - {path: nodes.get.response.body.id, equals: 9007199254740993}
       - {path: nodes.get.response.body.balance, equals: 10.5}
       - {path: nodes.get.response.body.balance, gt: 10}
   - id: off_by_one
-    kind: assertion
     assert: [{path: nodes.get.response.body.id, equals: 9007199254740992}]
   - id: send
-    kind: request
     request: {method: POST, url: "{{ .env.base }}/", body: {id: "{{ .nodes.get.out.id }}"}}
 `)
 	if s := step(r, "exact"); s.Status != report.Passed {

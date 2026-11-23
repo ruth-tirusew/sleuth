@@ -31,6 +31,8 @@ type Run struct {
 	// TimedOut is set when the run's overall timeout (Timeout) stopped it before it finished.
 	// RunID is the value of {{ .run.id }} in this run's templates.
 	RunID string `json:"run_id,omitempty"`
+	// RunUID is {{ .run.uid }}: 32 hex characters, random per run (derived from the id when pinned).
+	RunUID string `json:"run_uid,omitempty"`
 	// Interrupted is set when the run was stopped by Ctrl-C or SIGTERM. Cleanup still ran.
 	Interrupted bool   `json:"interrupted,omitempty"`
 	TimedOut    bool   `json:"timed_out,omitempty"`

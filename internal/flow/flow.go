@@ -84,14 +84,18 @@ func (p *Param) UnmarshalYAML(n *yaml.Node) error {
 }
 
 type Node struct {
-	ID        string     `yaml:"id" json:"id"`
-	Kind      string     `yaml:"kind" json:"kind"`
-	Needs     []string   `yaml:"needs,omitempty" json:"needs,omitempty"`
-	Request   *Request   `yaml:"request,omitempty" json:"request,omitempty"`
-	Assert    []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
-	Transform *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
-	Poll      *Poll      `yaml:"poll,omitempty" json:"poll,omitempty"`
-	DB        *DB        `yaml:"db,omitempty" json:"db,omitempty"`
+	ID string `yaml:"id" json:"id"`
+	// Kind is not written in a flow file: Validate sets it from the node's body key
+	// (request, poll, db, transform or flow; assert alone makes an assertion).
+	Kind string `yaml:"-" json:"kind"`
+	// LegacyKind catches a `kind:` key so the error can say what to write instead.
+	LegacyKind string     `yaml:"kind,omitempty" json:"-"`
+	Needs      []string   `yaml:"needs,omitempty" json:"needs,omitempty"`
+	Request    *Request   `yaml:"request,omitempty" json:"request,omitempty"`
+	Assert     []Check    `yaml:"assert,omitempty" json:"assert,omitempty"`
+	Transform  *Transform `yaml:"transform,omitempty" json:"transform,omitempty"`
+	Poll       *Poll      `yaml:"poll,omitempty" json:"poll,omitempty"`
+	DB         *DB        `yaml:"db,omitempty" json:"db,omitempty"`
 	// Contract (request nodes only) validates the call against a published OpenAPI document.
 	Contract *Contract `yaml:"contract,omitempty" json:"contract,omitempty"`
 	// Flow (flow nodes only) is the path of another flow file, relative to this one. Params are
@@ -556,6 +560,13 @@ func (f *Flow) Validate() error {
 		}
 		pseen[p.Name] = true
 	}
+	for _, nodes := range [][]Node{f.Nodes, f.Finally} {
+		for i := range nodes {
+			if err := nodes[i].resolveKind(); err != nil {
+				return err
+			}
+		}
+	}
 	seen := map[string]bool{}
 	mainIDs := map[string]bool{}
 	all := append(append([]Node{}, f.Nodes...), f.Finally...)
@@ -565,8 +576,8 @@ func (f *Flow) Validate() error {
 				return err
 			}
 		}
-		if n.Kind != KindFlow && (n.Flow != "" || n.Params != nil) {
-			return fmt.Errorf("node %s: flow and params are only valid on flow nodes", n.ID)
+		if err := n.checkTemplateFuncs(); err != nil {
+			return err
 		}
 		if _, untraceable := n.refs(); untraceable && len(n.Needs) == 0 {
 			return fmt.Errorf("node %s: a template reads .nodes in a way that cannot be traced to specific nodes (for example through a variable); list the nodes it uses under needs:", n.ID)
@@ -688,6 +699,46 @@ func (f *Flow) Validate() error {
 	return err
 }
 
+// resolveKind sets a node's kind from its body key. A node has exactly one of request, poll,
+// db, transform or flow (params counts as flow); with none of them, assert alone makes it an
+// assertion. Writing the kind as well would say the same thing twice, and the two could disagree.
+func (n *Node) resolveKind() error {
+	if n.LegacyKind != "" {
+		return fmt.Errorf("node %s: remove `kind: %s`; a node's kind is its body key (request, poll, db, transform, flow, or assert alone)", n.ID, n.LegacyKind)
+	}
+	var keys, kinds []string
+	add := func(present bool, key, kind string) {
+		if present {
+			keys = append(keys, key)
+			kinds = append(kinds, kind)
+		}
+	}
+	add(n.Request != nil, "request", KindRequest)
+	add(n.Poll != nil, "poll", KindPoll)
+	add(n.DB != nil, "db", KindDB)
+	add(n.Transform != nil, "transform", KindTransform)
+	add(n.Flow != "", "flow", KindFlow)
+	add(n.Flow == "" && n.Params != nil, "params", KindFlow)
+	var kind string
+	switch {
+	case len(keys) > 1:
+		return fmt.Errorf("node %s has both %s and %s; a node does one thing", n.ID, keys[0], keys[1])
+	case len(keys) == 1:
+		kind = kinds[0]
+	case n.Kind != "": // built in Go with no body; the kind's own checks report what is missing
+		return nil
+	case n.Assert != nil:
+		kind = KindAssertion
+	default:
+		return fmt.Errorf("node %s has nothing to do: give it one of request, poll, db, transform or flow (or assert alone)", n.ID)
+	}
+	if n.Kind != "" && n.Kind != kind {
+		return fmt.Errorf("node %s: kind %s does not match its %s body", n.ID, n.Kind, keys[0])
+	}
+	n.Kind = kind
+	return nil
+}
+
 // validateCleanup holds what only cleanup nodes must satisfy: they change state through the
 // API, so a database node (read-only) and a subflow (which would hide what is being cleaned up)
 // are refused.
@@ -775,7 +826,7 @@ func scanTemplates(v any, add func(string), untraceable *bool) {
 // templateRefs finds the nodes a template reads by parsing it, so `.nodes.a.out.x` and
 // `(index .nodes "a").out.x` both count and text inside string literals does not.
 func templateRefs(text string, add func(string), untraceable *bool) {
-	t, err := template.New("").Parse(text)
+	t, err := template.New("").Funcs(templateStubs()).Parse(text)
 	if err != nil || t.Tree == nil {
 		// not a template Go can parse: fall back to a plain scan of the {{ }} bodies
 		for _, body := range tplRe.FindAllStringSubmatch(text, -1) {
@@ -957,4 +1008,52 @@ func (f *Flow) Waves() ([][]string, error) {
 		waves[l] = append(waves[l], n.ID)
 	}
 	return waves, nil
+}
+
+// TemplateFuncNames are the functions flows may call in templates, beyond Go's own control
+// functions (eq, and, index ...). The runner implements them; the set is closed on purpose.
+var TemplateFuncNames = []string{"lower", "upper", "b64enc", "prefix", "join", "first", "default",
+	"urlquery", "html", "js", "print", "println", "printf"}
+
+// templateStubs lets templates that call them parse here, where only the shape is read.
+func templateStubs() template.FuncMap {
+	m := template.FuncMap{}
+	for _, n := range TemplateFuncNames {
+		m[n] = func(...any) any { return nil }
+	}
+	return m
+}
+
+// checkTemplateFuncs rejects a template that calls a function flows do not have, at load
+// rather than when the node runs.
+func (n Node) checkTemplateFuncs() error {
+	var generic any
+	b, err := json.Marshal(n)
+	if err != nil || json.Unmarshal(b, &generic) != nil {
+		return nil
+	}
+	var bad error
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case string:
+			if bad != nil || !strings.Contains(x, "{{") {
+				return
+			}
+			if _, err := template.New("").Funcs(templateStubs()).Parse(x); err != nil && strings.Contains(err.Error(), "not defined") {
+				bad = fmt.Errorf("node %s: %v (available functions: %s, and Go's eq, ne, lt, gt, and, or, not, index, len)",
+					n.ID, err, strings.Join(TemplateFuncNames, ", "))
+			}
+		}
+	}
+	walk(generic)
+	return bad
 }

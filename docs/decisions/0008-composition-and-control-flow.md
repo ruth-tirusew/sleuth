@@ -20,7 +20,7 @@ refusals (no mutable variables, no `while`, no `break`, no dynamic node generati
 ## Review of the proposal
 
 ### Subflows — build, but it is the expensive one
-Right idea, and it fits the DAG: a `kind: flow` node depends on whatever its `params` templates reference. Hidden
+Right idea, and it fits the DAG: a `flow:` node depends on whatever its `params` templates reference. Hidden
 internals come for free if the child gets a fresh `Context` (env, secrets, params; empty `nodes`). Problems to settle:
 1. **Evidence is flat everywhere.** Nesting needs `Step.Children` and step ids as paths (`auth/login`). `SummarizeDrift`,
    `AddCoverage`, JUnit, shapes, the dashboard timeline and the evidence schema must all descend. This refactor is most
@@ -43,7 +43,7 @@ internals come for free if the child gets a fresh `Context` (env, secrets, param
 - **Env cannot hold a list**, so `foreach: "{{ .env.test_order_ids }}"` (the proposal's example) cannot work today. Sources
   for v1: an inline YAML list, or an array produced by an earlier node. A list-valued env var is a separate, later change
   to `EnvConfig.Vars`.
-- **Only on `kind: flow` nodes.** Then one iteration is one subflow call: evidence nests as already designed, and we avoid
+- **Only on `flow:` nodes.** Then one iteration is one subflow call: evidence nests as already designed, and we avoid
   defining what iteration means for `poll`, `db` and contract nodes. Flow-level `foreach` is the same thing written as a
   parent flow, so it is dropped (one mechanism, not two). Request-level `foreach` can be sugar later.
 - `on_iteration_failure: fail|collect` (default `fail`); `parallel: N` is bounded by the shared pool and counted against it.
@@ -117,5 +117,5 @@ Top-level `finally:` list per flow (also inside subflows). Cleanup nodes run ser
 grace context (`-cleanup-timeout`, default 30s) and are marked `cleanup` in evidence. Failed ones get error kind `cleanup`:
 the run fails, the exit code of a main failure is unchanged, and a cleanup-only failure exits 1. A failed cleanup inside a
 subflow fails the run but does not fail the calling node, so later nodes still run. Allowed kinds: request, transform, poll
-on a request. SIGINT/SIGTERM stop the run like the timeout (cause is recorded, steps say "interrupted"), then run cleanup, exit 130; `{{ .run.id }}` (eight random digits, `-run-id` to pin) keeps data unique per run without a wrapper script. Not done: a node-level `cleanup:` next to the creating request (queued
+on a request. SIGINT/SIGTERM stop the run like the timeout (cause is recorded, steps say "interrupted"), then run cleanup, exit 130; `{{ .run.id }}` (eight random digits, `-run-id` to pin) keeps data unique per run without a wrapper script. Template functions as built: `lower upper b64enc prefix join first default` plus masking wrappers for `urlquery html js print println printf`; the set is closed (`flow.TemplateFuncNames`) and checked at load. Masking rule: an argument containing any masked value makes the result masked, tracked in a shared `SecretSet` that serve reads while a run is live; chaining works because derived values count as masked. Function results are text (a single-action template with a pipeline does not keep a native type; only a bare `{{ .path }}` does). `{{ .run.uid }}` is 128 random bits, or derived from a pinned `-run-id`. Not done: a node-level `cleanup:` next to the creating request (queued
 automatically, run in reverse) is the likely next step for resource-style cleanup.

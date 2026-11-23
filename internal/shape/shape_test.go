@@ -187,3 +187,31 @@ func TestSnapshotRoundTripAndRejectsOtherFiles(t *testing.T) {
 		t.Errorf("an unknown version must be refused clearly: %v", err)
 	}
 }
+
+func TestMergeSnapshotsRecordsEveryEnvironment(t *testing.T) {
+	entry := func(fields ...string) Entry {
+		s := Shape{Type: []string{TObject}, Fields: map[string]Field{}}
+		for _, f := range fields {
+			s.Fields[f] = Field{Shape: Shape{Type: []string{TString}}}
+		}
+		return Entry{Of: "response", Status: 200, Shape: s}
+	}
+	staging := &Snapshot{Recorded: Provenance{Env: "staging", Runs: 1}, Steps: map[string]Entry{"get": entry("id", "name")}}
+	prod := &Snapshot{Recorded: Provenance{Env: "prod", Runs: 1}, Steps: map[string]Entry{"get": entry("id")}}
+
+	merged, conflicts := MergeSnapshots(staging, prod)
+	if len(conflicts) != 0 {
+		t.Fatal(conflicts)
+	}
+	if merged.Recorded.Env != "prod,staging" || merged.Recorded.Runs != 2 {
+		t.Errorf("provenance = %+v", merged.Recorded)
+	}
+	// the widening is exactly what Compare reports against the old snapshot
+	cs := Compare(staging, prod.Steps)
+	if len(cs) != 1 || cs[0].Severity != Breaking || cs[0].Path != "$.name" {
+		t.Errorf("changes = %+v", cs)
+	}
+	if !merged.Steps["get"].Shape.Fields["name"].Optional {
+		t.Error("name should now be optional")
+	}
+}

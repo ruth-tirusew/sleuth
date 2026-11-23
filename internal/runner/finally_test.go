@@ -40,12 +40,11 @@ func cleanupServer(failDelete bool) (*httptest.Server, func() []string) {
 const finallyFlow = `version: 1
 name: top
 nodes:
-  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/things"}}
+  - {id: make, request: {method: POST, url: "{{ .env.base }}/things"}}
   - id: check
-    kind: assertion
     assert: [{path: nodes.make.response.body.id, equals: "nope"}]
 finally:
-  - {id: drop, kind: request, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
+  - {id: drop, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
 `
 
 func TestFinallyRunsAfterAFailedMainNode(t *testing.T) {
@@ -75,10 +74,10 @@ func TestFinallySkippedWhenWhatItCleansNeverHappened(t *testing.T) {
 	flow := `version: 1
 name: top
 nodes:
-  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/boom"}}
-  - {id: made, kind: assertion, assert: [{path: nodes.make.response.status, equals: 201}]}
+  - {id: make, request: {method: POST, url: "{{ .env.base }}/boom"}}
+  - {id: made, assert: [{path: nodes.make.response.status, equals: 201}]}
 finally:
-  - {id: drop, kind: request, needs: [made], request: {method: DELETE, url: "{{ .env.base }}/things/1"}}
+  - {id: drop, needs: [made], request: {method: DELETE, url: "{{ .env.base }}/things/1"}}
 `
 	r := runTree(t, srv.URL, map[string]string{"top.yaml": flow}, Options{})
 	drop := step(r, "drop")
@@ -99,10 +98,10 @@ func TestFailedCleanupFailsTheRunWithItsOwnKind(t *testing.T) {
 	flow := `version: 1
 name: top
 nodes:
-  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/things"}}
+  - {id: make, request: {method: POST, url: "{{ .env.base }}/things"}}
 finally:
-  - {id: drop, kind: request, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
-  - {id: dropped, kind: assertion, assert: [{path: nodes.drop.response.status, equals: 204}]}
+  - {id: drop, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
+  - {id: dropped, assert: [{path: nodes.drop.response.status, equals: 204}]}
 `
 	r := runTree(t, srv.URL, map[string]string{"top.yaml": flow}, Options{})
 	if r.Status != report.Failed {
@@ -123,10 +122,10 @@ func TestCleanupStillRunsAfterTheRunTimeout(t *testing.T) {
 	flow := `version: 1
 name: top
 nodes:
-  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/things"}}
-  - {id: hang, kind: request, needs: [make], request: {url: "{{ .env.base }}/slow"}}
+  - {id: make, request: {method: POST, url: "{{ .env.base }}/things"}}
+  - {id: hang, needs: [make], request: {url: "{{ .env.base }}/slow"}}
 finally:
-  - {id: drop, kind: request, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
+  - {id: drop, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
 `
 	r := runTree(t, srv.URL, map[string]string{"top.yaml": flow}, Options{Timeout: 300 * time.Millisecond, CleanupGrace: 5 * time.Second})
 	if !r.TimedOut {
@@ -144,7 +143,7 @@ func TestSubflowFinallyRunsWhenTheSubflowEnds(t *testing.T) {
 	srv, seen := cleanupServer(false)
 	defer srv.Close()
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml":  "version: 1\nname: top\nnodes:\n  - {id: sub, kind: flow, flow: _sub.yaml}\n",
+		"top.yaml":  "version: 1\nname: top\nnodes:\n  - {id: sub, flow: _sub.yaml}\n",
 		"_sub.yaml": finallyFlow,
 	}, Options{})
 	sub := step(r, "sub")
@@ -163,10 +162,10 @@ func TestSubflowFinallyRunsWhenTheSubflowEnds(t *testing.T) {
 func TestFailedSubflowCleanupDoesNotBlockTheCaller(t *testing.T) {
 	srv, _ := cleanupServer(true)
 	defer srv.Close()
-	sub := strings.Replace(finallyFlow, `equals: "nope"`, `equals: "42"`, 1) + `  - {id: dropped, kind: assertion, assert: [{path: nodes.drop.response.status, equals: 204}]}
+	sub := strings.Replace(finallyFlow, `equals: "nope"`, `equals: "42"`, 1) + `  - {id: dropped, assert: [{path: nodes.drop.response.status, equals: 204}]}
 `
 	r := runTree(t, srv.URL, map[string]string{
-		"top.yaml":  "version: 1\nname: top\nnodes:\n  - {id: sub, kind: flow, flow: _sub.yaml}\n  - {id: after, kind: assertion, needs: [sub], assert: [{path: nodes.sub.out, exists: false}]}\n",
+		"top.yaml":  "version: 1\nname: top\nnodes:\n  - {id: sub, flow: _sub.yaml}\n  - {id: after, needs: [sub], assert: [{path: nodes.sub.out, exists: false}]}\n",
 		"_sub.yaml": sub,
 	}, Options{})
 	if step(r, "sub").Status != report.Passed || step(r, "after").Status == report.Skipped {
@@ -186,11 +185,11 @@ func TestInterruptStopsTheRunButCleanupStillRuns(t *testing.T) {
 	flow := `version: 1
 name: top
 nodes:
-  - {id: make, kind: request, request: {method: POST, url: "{{ .env.base }}/things"}}
-  - {id: hang, kind: request, needs: [make], request: {url: "{{ .env.base }}/slow"}}
-  - {id: later, kind: transform, needs: [hang], transform: {set: {x: 1}}}
+  - {id: make, request: {method: POST, url: "{{ .env.base }}/things"}}
+  - {id: hang, needs: [make], request: {url: "{{ .env.base }}/slow"}}
+  - {id: later, needs: [hang], transform: {set: {x: 1}}}
 finally:
-  - {id: drop, kind: request, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
+  - {id: drop, request: {method: DELETE, url: "{{ .env.base }}/things/{{ .nodes.make.response.body.id }}"}}
 `
 	ctx, cancel := context.WithCancel(context.Background())
 	time.AfterFunc(300*time.Millisecond, cancel)
@@ -217,9 +216,9 @@ func TestRunIDIsStableWithinARunAndPinnable(t *testing.T) {
 	defer srv.Close()
 	files := map[string]string{
 		"top.yaml": "version: 1\nname: top\nnodes:\n" +
-			"  - {id: a, kind: request, request: {url: \"{{ .env.base }}/a/{{ .run.id }}\"}}\n" +
-			"  - {id: s, kind: flow, flow: _sub.yaml}\n",
-		"_sub.yaml": "version: 1\nname: sub\nnodes:\n  - {id: b, kind: request, request: {url: \"{{ .env.base }}/b/{{ .run.id }}\"}}\n",
+			"  - {id: a, request: {url: \"{{ .env.base }}/a/{{ .run.id }}\"}}\n" +
+			"  - {id: s, flow: _sub.yaml}\n",
+		"_sub.yaml": "version: 1\nname: sub\nnodes:\n  - {id: b, request: {url: \"{{ .env.base }}/b/{{ .run.id }}\"}}\n",
 	}
 	r := runTree(t, srv.URL, files, Options{RunID: "run-77"})
 	if r.RunID != "run-77" || r.Status != report.Passed {
@@ -239,7 +238,7 @@ func TestRunIDIsStableWithinARunAndPinnable(t *testing.T) {
 }
 
 func TestBadRunIDIsASetupError(t *testing.T) {
-	f := mustLoadInline(t, "version: 1\nname: t\nnodes:\n  - {id: x, kind: transform, transform: {set: {a: 1}}}\n")
+	f := mustLoadInline(t, "version: 1\nname: t\nnodes:\n  - {id: x, transform: {set: {a: 1}}}\n")
 	if _, _, err := Run(f, &EnvConfig{}, Options{RunID: "a b/c"}); err == nil {
 		t.Fatal("a run id with spaces or slashes must be refused")
 	}
@@ -256,4 +255,23 @@ func mustLoadInline(t *testing.T, y string) *flow.Flow {
 		t.Fatal(err)
 	}
 	return f
+}
+
+func TestRunUIDIsLongRandomAndRepeatsWhenPinned(t *testing.T) {
+	srv, seen := cleanupServer(false)
+	defer srv.Close()
+	files := map[string]string{"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: a, request: {url: \"{{ .env.base }}/u/{{ .run.uid }}\"}}\n"}
+	a := runTree(t, srv.URL, files, Options{})
+	b := runTree(t, srv.URL, files, Options{})
+	if len(a.RunUID) != 32 || a.RunUID == b.RunUID {
+		t.Fatalf("uids must be 32 hex and differ between runs: %q %q", a.RunUID, b.RunUID)
+	}
+	p1 := runTree(t, srv.URL, files, Options{RunID: "pin"})
+	p2 := runTree(t, srv.URL, files, Options{RunID: "pin"})
+	if p1.RunUID != p2.RunUID || p1.RunUID == a.RunUID {
+		t.Fatalf("a pinned id must repeat its uid: %q %q", p1.RunUID, p2.RunUID)
+	}
+	if !strings.Contains(strings.Join(seen(), ","), "GET /u/"+p1.RunUID) {
+		t.Fatalf("server saw %v", seen())
+	}
 }

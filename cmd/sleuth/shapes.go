@@ -62,6 +62,10 @@ func recordShapesFile(path string, r *report.Run, flow, flowSHA, env string, mer
 			}
 			return 2
 		}
+		if len(changes) > 0 {
+			fmt.Printf("merging widens the snapshot by %d change(s); a client written against the old snapshot would have been told about these:\n", len(changes))
+			printChanges(changes)
+		}
 		if code := backup(path, old); code != 0 {
 			return code
 		}

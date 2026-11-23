@@ -288,10 +288,10 @@ func (s *Server) execute(ru *run, path, envPath string, parallel int) {
 		fail(err)
 		return
 	}
-	ru.secrets = runner.SecretValues(env)
+	ru.live = runner.NewSecretSet(runner.SecretValues(env))
 	envName := strings.TrimSuffix(filepath.Base(envPath), filepath.Ext(envPath))
 	var t0 time.Time
-	rep, secrets, err := runner.Run(fl, env, runner.Options{EnvName: envName, Parallel: parallel, OnEvent: func(e runner.Event) {
+	rep, secrets, err := runner.Run(fl, env, runner.Options{EnvName: envName, Parallel: parallel, Secrets: ru.live, OnEvent: func(e runner.Event) {
 		if e.Type == "run_start" {
 			t0 = e.At
 		}
@@ -328,6 +328,7 @@ func (s *Server) execute(ru *run, path, envPath string, parallel int) {
 type run struct {
 	id      string
 	secrets []string
+	live    *runner.SecretSet // while the run is in progress: every value to mask so far
 
 	mu     sync.Mutex
 	events [][]byte
@@ -343,7 +344,11 @@ func (ru *run) add(v any, final bool) {
 		b, _ = json.Marshal(map[string]string{"type": "run_error", "error": err.Error()})
 		final = true
 	}
-	b = report.MaskJSON(b, ru.secrets)
+	secrets := ru.secrets
+	if ru.live != nil {
+		secrets = ru.live.Values()
+	}
+	b = report.MaskJSON(b, secrets)
 	ru.mu.Lock()
 	ru.events = append(ru.events, b)
 	ru.done = ru.done || final

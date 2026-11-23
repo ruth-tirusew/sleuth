@@ -237,3 +237,17 @@ func TestFinallyValidation(t *testing.T) {
 		})
 	}
 }
+
+func TestUnknownTemplateFunctionIsRejectedAtLoad(t *testing.T) {
+	dir := writeTree(t, map[string]string{
+		"ok.yaml":  "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: 'http://x/{{ .env.n | lower | b64enc }}', headers: {k: '{{ join \",\" .env.l }}'}}}\n",
+		"bad.yaml": "version: 1\nname: t\nnodes:\n  - {id: a, kind: request, request: {url: 'http://x/{{ .env.n | reverse }}'}}\n",
+	})
+	if _, err := Load(filepath.Join(dir, "ok.yaml")); err != nil {
+		t.Fatalf("known functions must load: %v", err)
+	}
+	_, err := Load(filepath.Join(dir, "bad.yaml"))
+	if err == nil || !strings.Contains(err.Error(), "reverse") || !strings.Contains(err.Error(), "available functions") {
+		t.Fatalf("want an unknown-function error naming it and the alternatives, got %v", err)
+	}
+}

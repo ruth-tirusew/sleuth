@@ -126,6 +126,7 @@ func Compare(snap *Snapshot, observed map[string]Entry) []Change {
 func MergeSnapshots(old, next *Snapshot) (*Snapshot, []string) {
 	out := &Snapshot{Format: Format, Flow: next.Flow, FlowSHA: next.FlowSHA, Recorded: next.Recorded, Steps: map[string]Entry{}}
 	out.Recorded.Runs = old.Recorded.Runs + next.Recorded.Runs
+	out.Recorded.Env = joinEnvs(old.Recorded.Env, next.Recorded.Env)
 	var conflicts []string
 	for id, e := range old.Steps {
 		out.Steps[id] = e
@@ -154,4 +155,20 @@ func MergeSnapshots(old, next *Snapshot) (*Snapshot, []string) {
 		out.Steps[id] = o
 	}
 	return out, conflicts
+}
+
+// joinEnvs lists every environment merged into a snapshot, so a merge across environments is visible in the file.
+func joinEnvs(a, b string) string {
+	set := map[string]bool{}
+	for _, e := range append(strings.Split(a, ","), strings.Split(b, ",")...) {
+		if e != "" {
+			set[e] = true
+		}
+	}
+	envs := make([]string, 0, len(set))
+	for e := range set {
+		envs = append(envs, e)
+	}
+	sort.Strings(envs)
+	return strings.Join(envs, ",")
 }

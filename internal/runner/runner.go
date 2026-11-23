@@ -3,6 +3,8 @@ package runner
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"sort"
 	"time"
@@ -34,6 +36,10 @@ type Options struct {
 	Context context.Context
 	// RunID is the value of {{ .run.id }}. Empty means a fresh random one; pin it to repeat a run.
 	RunID string
+	// Secrets, if set, is filled with every value to mask as the run goes, including values
+	// derived from secrets by template functions. A caller that shows events while the run is in
+	// progress masks with Secrets.Values() each time. Nil means Run keeps its own.
+	Secrets *SecretSet
 	// CaptureShapes records, on each step that returned JSON, the structure of its response (or
 	// database rows) as Step.Shape, so a run can be compared with, or recorded as, a shape snapshot.
 	CaptureShapes bool
@@ -88,13 +94,22 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		ctx.setParams(params)
 	}
 	ctx.grace = opts.CleanupGrace
-	runID := opts.RunID
+	ctx.sec = opts.Secrets
+	if ctx.sec == nil {
+		ctx.sec = NewSecretSet(nil)
+	}
+	ctx.sec.Add(secrets...)
+	runID, runUID := opts.RunID, ""
 	if runID == "" {
-		runID = NewRunID()
+		runID, runUID = NewRunID(), NewRunUID()
 	} else if !runIDRe.MatchString(runID) {
 		return nil, nil, fmt.Errorf("run id %q must match %s", runID, runIDRe)
 	}
-	ctx.setRunID(runID)
+	if runUID == "" { // a pinned id repeats the run, so its uid repeats too
+		sum := sha256.Sum256([]byte("sleuth-run-uid:" + runID))
+		runUID = hex.EncodeToString(sum[:16])
+	}
+	ctx.setRunID(runID, runUID)
 	specs, err := loadContracts(f, env)
 	if err != nil {
 		return nil, nil, err
@@ -119,7 +134,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 		defer cancel()
 		ctx.run = rctx
 	}
-	run := &report.Run{Flow: f.Name, Env: opts.EnvName, RunID: runID, Status: report.Passed, StartedAt: time.Now().UTC()}
+	run := &report.Run{Flow: f.Name, Env: opts.EnvName, RunID: runID, RunUID: runUID, Status: report.Passed, StartedAt: time.Now().UTC()}
 	if workers > 1 {
 		run.Parallel = workers
 	}
@@ -265,7 +280,7 @@ func Run(f *flow.Flow, env *EnvConfig, opts Options) (*report.Run, []string, err
 	}
 	report.AddCoverage(run, published)
 	report.AddSpecDrift(run, baselineDrift, opts.FailOnSpecDrift)
-	return run, secrets, nil
+	return run, ctx.sec.Values(), nil
 }
 
 // execNode runs one node whose dependencies all passed and records its evidence.

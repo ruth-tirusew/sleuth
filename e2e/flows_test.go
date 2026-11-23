@@ -1,6 +1,7 @@
 package e2e
 
 import (
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"strings"
@@ -57,6 +58,21 @@ func TestFlows(t *testing.T) {
 				}
 				if !strings.Contains(r.stdout, "***") {
 					t.Errorf("the masked value should be visible as ***:\n%s", r.stdout)
+				}
+			},
+		},
+		{
+			name: "values derived from a secret by template functions are masked too", flow: "secret-derived", exit: 3,
+			opts:  runOptions{env: "env-secret.yaml", extraEnv: []string{"API_TOKEN=" + apiToken}},
+			steps: map[string]string{"call": "infrastructure"},
+			check: func(t *testing.T, r *result, _ int) {
+				raw := r.rawEvidence(t)
+				up := strings.ToUpper(apiToken)
+				b64 := base64.StdEncoding.EncodeToString([]byte("u:" + apiToken))
+				for _, form := range []string{apiToken, up, url.QueryEscape(up), url.PathEscape(up), b64, "u:" + apiToken} {
+					if strings.Contains(r.stdout, form) || strings.Contains(r.stderr, form) || strings.Contains(raw, form) {
+						t.Errorf("a derived form of the secret leaked as %q", form)
+					}
 				}
 			},
 		},

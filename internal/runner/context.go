@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"math/big"
@@ -167,6 +168,8 @@ type Context struct {
 	run context.Context
 	// grace bounds the finally nodes of a run, which must still run after the run's timeout.
 	grace time.Duration
+	// sec collects the values to mask, including ones template functions derive from secrets.
+	sec *SecretSet
 }
 
 // interrupted is true when the run context ended because the caller cancelled it (Ctrl-C),
@@ -210,7 +213,7 @@ func NewContext(env *EnvConfig) (*Context, []string, error) {
 	}
 	c := &Context{data: map[string]any{
 		"env": vars, "secrets": secrets, "nodes": map[string]any{}, "params": map[string]any{},
-		"run": map[string]any{"id": ""},
+		"run": map[string]any{"id": "", "uid": ""},
 	}}
 	return c, secretValues, nil
 }
@@ -273,7 +276,7 @@ func (c *Context) Render(v any) (any, error) {
 		if !strings.Contains(t, "{{") {
 			return t, nil
 		}
-		tpl, err := template.New("").Option("missingkey=error").Parse(t)
+		tpl, err := template.New("").Option("missingkey=error").Funcs(funcMap(c.sec)).Parse(t)
 		if err != nil {
 			return nil, err
 		}
@@ -329,8 +332,18 @@ func NewRunID() string {
 	return fmt.Sprintf("%08d", n.Int64())
 }
 
-func (c *Context) setRunID(id string) {
+// NewRunUID returns 128 random bits as hex: unlike the eight-digit id, concurrent runs on a
+// shared environment cannot collide on it in practice.
+func NewRunUID() string {
+	b := make([]byte, 16)
+	if _, err := rand.Read(b); err != nil {
+		return fmt.Sprintf("%032x", time.Now().UnixNano())
+	}
+	return hex.EncodeToString(b)
+}
+
+func (c *Context) setRunID(id, uid string) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.data["run"] = map[string]any{"id": id}
+	c.data["run"] = map[string]any{"id": id, "uid": uid}
 }

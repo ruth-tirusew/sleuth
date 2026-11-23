@@ -73,9 +73,31 @@ Templates (`{{ ... }}`) can read:
 | `.nodes.<id>.rows`, `.row_count` | a db node's result |
 | `.nodes.<id>.out.<name>` | values a node `extract`ed or `transform`ed |
 | `.run.id` | eight random digits, the same for the whole run (subflows and `finally:` too) and recorded in the evidence; `-run-id X` pins it to repeat a run. Use it for names, phones and keys that must be unique per run |
+| `.run.uid` | 32 random hex characters, for names that must not collide even when many runs share an environment (eight digits can, rarely); a pinned `-run-id` gives the same uid every time |
 
 A string that is exactly one reference (`"{{ .nodes.a.out.count }}"`) keeps its native type; anything else is
 rendered as text. An unresolved reference is an error, never an empty string.
+
+### Template functions
+
+A small, closed set, written the Go way (the piped value is the last argument):
+
+| Function | Example | Result |
+|---|---|---|
+| `lower`, `upper` | `{{ .env.name \| upper }}` | case changed |
+| `b64enc` | `{{ .secrets.TOKEN \| b64enc }}` | standard base64 |
+| `prefix` | `{{ prefix "id-" .run.id }}` | `id-` + value |
+| `join` | `{{ join "," .nodes.a.out.ids }}` | list joined with a separator |
+| `first` | `{{ .nodes.a.out.ids \| first }}` | first element (error if empty or not a list) |
+| `default` | `{{ default "none" .env.note }}` | the fallback when the value is empty, false or an empty list |
+| `urlquery`, `html`, `js`, `printf`, `print`, `println` | `{{ printf "%s-%s" .run.id .env.name }}` | Go's own, with masking added |
+
+Go's `eq`, `ne`, `lt`, `gt`, `and`, `or`, `not`, `index` and `len` also work. Anything else (`map`, `filter`, `sort`,
+loops over data) is refused on purpose, and an unknown function is a load error that lists the available ones.
+**Secrets stay masked through functions:** if any argument contains a secret (or a value already derived from one),
+the result is added to the masked set, so `{{ .secrets.TOKEN | upper }}` or a Basic auth header built with `b64enc`
+never reaches the evidence, the printed report, JUnit or the dashboard. A result of a function is always text; only a
+bare `{{ .path }}` keeps its native type.
 
 ### Environment file
 

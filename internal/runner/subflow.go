@@ -16,7 +16,7 @@ import (
 func (c *Context) child() *Context {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
-	return &Context{run: c.run, grace: c.grace, data: map[string]any{
+	return &Context{run: c.run, grace: c.grace, sec: c.sec, data: map[string]any{
 		"env": c.data["env"], "secrets": c.data["secrets"],
 		"nodes": map[string]any{}, "params": map[string]any{}, "run": c.data["run"],
 	}}

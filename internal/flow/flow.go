@@ -565,6 +565,9 @@ func (f *Flow) Validate() error {
 				return err
 			}
 		}
+		if err := n.checkTemplateFuncs(); err != nil {
+			return err
+		}
 		if n.Kind != KindFlow && (n.Flow != "" || n.Params != nil) {
 			return fmt.Errorf("node %s: flow and params are only valid on flow nodes", n.ID)
 		}
@@ -775,7 +778,7 @@ func scanTemplates(v any, add func(string), untraceable *bool) {
 // templateRefs finds the nodes a template reads by parsing it, so `.nodes.a.out.x` and
 // `(index .nodes "a").out.x` both count and text inside string literals does not.
 func templateRefs(text string, add func(string), untraceable *bool) {
-	t, err := template.New("").Parse(text)
+	t, err := template.New("").Funcs(templateStubs()).Parse(text)
 	if err != nil || t.Tree == nil {
 		// not a template Go can parse: fall back to a plain scan of the {{ }} bodies
 		for _, body := range tplRe.FindAllStringSubmatch(text, -1) {
@@ -957,4 +960,52 @@ func (f *Flow) Waves() ([][]string, error) {
 		waves[l] = append(waves[l], n.ID)
 	}
 	return waves, nil
+}
+
+// TemplateFuncNames are the functions flows may call in templates, beyond Go's own control
+// functions (eq, and, index ...). The runner implements them; the set is closed on purpose.
+var TemplateFuncNames = []string{"lower", "upper", "b64enc", "prefix", "join", "first", "default",
+	"urlquery", "html", "js", "print", "println", "printf"}
+
+// templateStubs lets templates that call them parse here, where only the shape is read.
+func templateStubs() template.FuncMap {
+	m := template.FuncMap{}
+	for _, n := range TemplateFuncNames {
+		m[n] = func(...any) any { return nil }
+	}
+	return m
+}
+
+// checkTemplateFuncs rejects a template that calls a function flows do not have, at load
+// rather than when the node runs.
+func (n Node) checkTemplateFuncs() error {
+	var generic any
+	b, err := json.Marshal(n)
+	if err != nil || json.Unmarshal(b, &generic) != nil {
+		return nil
+	}
+	var bad error
+	var walk func(v any)
+	walk = func(v any) {
+		switch x := v.(type) {
+		case map[string]any:
+			for _, e := range x {
+				walk(e)
+			}
+		case []any:
+			for _, e := range x {
+				walk(e)
+			}
+		case string:
+			if bad != nil || !strings.Contains(x, "{{") {
+				return
+			}
+			if _, err := template.New("").Funcs(templateStubs()).Parse(x); err != nil && strings.Contains(err.Error(), "not defined") {
+				bad = fmt.Errorf("node %s: %v (available functions: %s, and Go's eq, ne, lt, gt, and, or, not, index, len)",
+					n.ID, err, strings.Join(TemplateFuncNames, ", "))
+			}
+		}
+	}
+	walk(generic)
+	return bad
 }

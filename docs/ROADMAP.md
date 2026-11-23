@@ -111,7 +111,7 @@ section and a flow-schema versioning policy; a design note on includes and data-
 ## Composition and control flow
 
 Plan: [`decisions/0008`](decisions/0008-composition-and-control-flow.md). **Subflows built 2026-10-12**
-([`0009`](decisions/0009-subflows.md)). **`finally` built 2026-10-20** (node-level cleanup, `-cleanup-timeout`, kind `cleanup`; Ctrl-C stops the run and then runs it, exit 130). Next in order: `{{ .run.id }}` built too (a per-run id, `-run-id` to pin it). Template functions with masking (unique values beyond the id), `if:`, `foreach` on flow nodes, and only on demand the rest.
+([`0009`](decisions/0009-subflows.md)). Built 2026-10-20: **`finally`** (node-level cleanup, `-cleanup-timeout`, kind `cleanup`; Ctrl-C stops the run and then runs it, exit 130), `{{ .run.id }}` / `{{ .run.uid }}` (per-run values, `-run-id` pins them) and the **template function set** with the derived-secret masking rule. Next in order: `if:`, `foreach` on flow nodes, and only on demand the rest.
 
 ## Milestone 3 — Close the known limits
 

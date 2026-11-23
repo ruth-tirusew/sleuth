@@ -257,3 +257,22 @@ func mustLoadInline(t *testing.T, y string) *flow.Flow {
 	}
 	return f
 }
+
+func TestRunUIDIsLongRandomAndRepeatsWhenPinned(t *testing.T) {
+	srv, seen := cleanupServer(false)
+	defer srv.Close()
+	files := map[string]string{"top.yaml": "version: 1\nname: top\nnodes:\n  - {id: a, kind: request, request: {url: \"{{ .env.base }}/u/{{ .run.uid }}\"}}\n"}
+	a := runTree(t, srv.URL, files, Options{})
+	b := runTree(t, srv.URL, files, Options{})
+	if len(a.RunUID) != 32 || a.RunUID == b.RunUID {
+		t.Fatalf("uids must be 32 hex and differ between runs: %q %q", a.RunUID, b.RunUID)
+	}
+	p1 := runTree(t, srv.URL, files, Options{RunID: "pin"})
+	p2 := runTree(t, srv.URL, files, Options{RunID: "pin"})
+	if p1.RunUID != p2.RunUID || p1.RunUID == a.RunUID {
+		t.Fatalf("a pinned id must repeat its uid: %q %q", p1.RunUID, p2.RunUID)
+	}
+	if !strings.Contains(strings.Join(seen(), ","), "GET /u/"+p1.RunUID) {
+		t.Fatalf("server saw %v", seen())
+	}
+}
